@@ -1,4 +1,4 @@
-"""RAG Help chat router."""
+"""RAG Help chat router with context-grounded intelligence."""
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List
@@ -21,11 +21,22 @@ class RAGResponse(BaseModel):
 
 @router.post("/chat", summary="RAG Help chat endpoint", response_model=RAGResponse)
 async def rag_chat(msg: ChatMessage):
-    # Placeholder: in production, embed context, retrieve from vector store, call LLM, stream response.
+    profile = {}
+    if msg.dataset_id:
+        try:
+            from .datasets import get_dataset_context
+            ctx = get_dataset_context(msg.dataset_id)
+            profile = ctx.get("profile", {})
+        except Exception:
+            profile = {}
+
+    from ..services.rag import generate_rag_insight
+    res = generate_rag_insight(msg.message, msg.dataset_id, profile)
+
     return RAGResponse(
-        explanation="This is a placeholder explanation based on the uploaded dataset.",
-        root_cause="No real root cause computed yet.",
-        counter_plan="Consider cleaning missing values and re-run the analysis.",
-        confidence="medium",
-        citations=["profile missing-value metric"],
+        explanation=res["explanation"],
+        root_cause=res["root_cause"],
+        counter_plan=res["counter_plan"],
+        confidence=res["confidence"],
+        citations=res["citations"],
     )

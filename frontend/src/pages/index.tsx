@@ -1,5 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
+
+declare global {
+  interface Window {
+    Plotly?: any;
+  }
+}
 
 // ---- Types ----
 interface ProfileData {
@@ -44,7 +50,7 @@ export default function Home() {
   const [ragResponse, setRagResponse] = useState<RAGResponse | null>(null);
   const [ragLoading, setRagLoading] = useState(false);
 
-  // Compare state
+  // Compare state: STRICTLY USER SELECTED (default empty)
   const [groupBy, setGroupBy] = useState('');
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<any>(null);
@@ -56,25 +62,21 @@ export default function Home() {
   const [chartY, setChartY] = useState('');
   const [chartResult, setChartResult] = useState<any>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
 
-  // ML state
+  // ML state: STRICTLY USER SELECTED (default empty)
   const [mlTask, setMlTask] = useState<'kmeans' | 'regression'>('kmeans');
   const [mlFeatures, setMlFeatures] = useState<string[]>([]);
   const [mlTarget, setMlTarget] = useState('');
   const [mlResult, setMlResult] = useState<any>(null);
   const [mlLoading, setMlLoading] = useState(false);
 
-  // View Code modal
-  const [codeModalOpen, setCodeModalOpen] = useState(false);
-  const [codeSnippet, setCodeSnippet] = useState<{ pandas_code: string; sql_code: string } | null>(null);
-  const [codeLoading, setCodeLoading] = useState(false);
-
   // PDF Report
   const [pdfDownloading, setPdfDownloading] = useState(false);
 
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-  // ---- Handle Column Defaulting on Upload ----
+  // ---- Handle Column Setup on Upload (User Selects Their Own Metrics) ----
   useEffect(() => {
     if (profile) {
       const all = Object.keys(profile.missing_percentage);
@@ -85,19 +87,59 @@ export default function Home() {
       setNumericCols(num);
       setCatCols(cat);
 
-      // Set defaults for Compare
+      // Default X axis / group by to the first category, but LEAVE METRICS & FEATURES EMPTY FOR USER TO SELECT
       setGroupBy(cat[0] || all[0] || '');
-      setSelectedMetrics(num.slice(0, 3));
+      setSelectedMetrics([]); // User selects their own metrics
 
-      // Set defaults for Charts
       setChartX(cat[0] || all[0] || '');
-      setChartY(num[0] || all[1] || '');
+      setChartY(num[0] || '');
 
-      // Set defaults for ML
       setMlTarget(num[0] || '');
-      setMlFeatures(num.slice(1, 4));
+      setMlFeatures([]); // User selects their own feature columns
     }
   }, [profile]);
+
+  // ---- Render Plotly Chart When chartResult is updated ----
+  useEffect(() => {
+    if (chartResult && chartResult.plotly_spec && typeof window !== 'undefined') {
+      const renderPlot = () => {
+        if (window.Plotly && chartContainerRef.current) {
+          const spec = chartResult.plotly_spec;
+          const layout = {
+            ...spec.layout,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', family: 'system-ui, sans-serif' },
+            xaxis: {
+              ...spec.layout?.xaxis,
+              gridcolor: '#1e293b',
+              zerolinecolor: '#334155',
+            },
+            yaxis: {
+              ...spec.layout?.yaxis,
+              gridcolor: '#1e293b',
+              zerolinecolor: '#334155',
+            },
+            margin: { t: 40, r: 25, l: 60, b: 60 },
+            autosize: true,
+          };
+          window.Plotly.newPlot(chartContainerRef.current, spec.data, layout, {
+            responsive: true,
+            displayModeBar: true,
+            displaylogo: false,
+            modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+          });
+        }
+      };
+
+      if (window.Plotly) {
+        renderPlot();
+      } else {
+        const timer = setTimeout(renderPlot, 500);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [chartResult, activeTab]);
 
   // ---- Upload ----
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -117,6 +159,9 @@ export default function Home() {
       setDatasetId(data.dataset_id);
       setFilename(data.filename);
       setProfile(data.profile);
+      setCompareResult(null);
+      setChartResult(null);
+      setMlResult(null);
       setActiveTab('summary');
     } catch (err: any) {
       setError(err.message || 'Upload failed. Check if server is running.');
@@ -127,7 +172,11 @@ export default function Home() {
 
   // ---- Run Compare ----
   const handleCompare = async () => {
-    if (!datasetId || !groupBy || selectedMetrics.length === 0) return;
+    if (!datasetId || !groupBy) return;
+    if (selectedMetrics.length === 0) {
+      alert('Please select at least one numeric metric to compare.');
+      return;
+    }
     setCompareLoading(true);
     try {
       const res = await fetch(`${API}/datasets/${datasetId}/compare`, {
@@ -147,7 +196,10 @@ export default function Home() {
 
   // ---- Run Chart ----
   const handleChart = async () => {
-    if (!datasetId || !chartX) return;
+    if (!datasetId || !chartX) {
+      alert('Please select an X-Axis column.');
+      return;
+    }
     setChartLoading(true);
     try {
       const res = await fetch(`${API}/datasets/${datasetId}/charts`, {
@@ -171,7 +223,11 @@ export default function Home() {
 
   // ---- Run ML ----
   const handleML = async () => {
-    if (!datasetId || mlFeatures.length === 0) return;
+    if (!datasetId) return;
+    if (mlFeatures.length === 0) {
+      alert('Please select at least one feature column for the model.');
+      return;
+    }
     setMlLoading(true);
     try {
       const res = await fetch(`${API}/datasets/${datasetId}/ml`, {
@@ -213,42 +269,24 @@ export default function Home() {
     }
   };
 
-  // ---- View Code ----
-  const openCodeModal = async (type: 'compare' | 'chart') => {
-    if (!datasetId) return;
-    setCodeLoading(true);
-    setCodeModalOpen(true);
-    try {
-      let url = `${API}/datasets/${datasetId}/code?analysis_type=${type}`;
-      if (type === 'compare') {
-        url += `&group_by=${encodeURIComponent(groupBy)}&metrics=${encodeURIComponent(selectedMetrics.join(','))}`;
-      } else {
-        url += `&chart_type=${chartType}&x=${encodeURIComponent(chartX)}&y=${encodeURIComponent(chartY)}`;
-      }
-      const res = await fetch(url);
-      const data = await res.json();
-      setCodeSnippet(data);
-    } catch {
-      setCodeSnippet(null);
-    } finally {
-      setCodeLoading(false);
-    }
-  };
-
   // ---- Download PDF Report ----
   const handleDownloadPDF = async () => {
     if (!datasetId) return;
     setPdfDownloading(true);
     try {
-      const res = await fetch(`${API}/reports/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataset_id: datasetId }),
-      });
-      const data = await res.json();
-      alert(`Report compilation initiated! Report ID: ${data.report_id}`);
+      const res = await fetch(`${API}/reports/${datasetId}/download`);
+      if (!res.ok) throw new Error('PDF compilation failed on server');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `AADES_Evaluation_Report_${datasetId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert('Error triggering PDF report: ' + err.message);
+      alert('Error downloading report: ' + err.message);
     } finally {
       setPdfDownloading(false);
     }
@@ -258,6 +296,8 @@ export default function Home() {
     <>
       <Head>
         <title>AADES – Adaptive Auto Data Evaluation System v3.0</title>
+        {/* Load Plotly.js for visual chart rendering */}
+        <script src="https://cdn.plot.ly/plotly-2.30.0.min.js" async></script>
       </Head>
 
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -282,7 +322,7 @@ export default function Home() {
                 disabled={pdfDownloading}
                 className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5"
               >
-                📄 {pdfDownloading ? 'Compiling PDF...' : 'Download PDF Report'}
+                📄 {pdfDownloading ? 'Generating PDF...' : 'Download PDF Report'}
               </button>
             )}
             <button
@@ -469,63 +509,66 @@ export default function Home() {
                   <div className="space-y-6">
                     {/* Controls Bar */}
                     <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-                      <div className="flex flex-wrap items-end justify-between gap-4">
+                      <div className="space-y-3">
                         <div className="flex flex-wrap items-center gap-4">
                           <div>
-                            <label className="text-xs font-semibold text-slate-400 block mb-1">Grouping Dimension (X / Category)</label>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Grouping Dimension (Category)</label>
                             <select
                               value={groupBy}
                               onChange={e => setGroupBy(e.target.value)}
-                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-56"
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-64"
                             >
                               {allColumns.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </div>
+                        </div>
 
-                          <div>
-                            <label className="text-xs font-semibold text-slate-400 block mb-1">Metrics to Compare (Numeric)</label>
-                            <div className="flex flex-wrap gap-1.5 max-w-lg">
-                              {numericCols.map(m => {
-                                const selected = selectedMetrics.includes(m);
-                                return (
-                                  <button
-                                    key={m}
-                                    onClick={() => {
-                                      if (selected) {
-                                        if (selectedMetrics.length > 1) setSelectedMetrics(selectedMetrics.filter(x => x !== m));
-                                      } else {
-                                        setSelectedMetrics([...selectedMetrics, m]);
-                                      }
-                                    }}
-                                    className={`text-[11px] px-2.5 py-1 rounded-md font-medium transition ${
-                                      selected ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
-                                    }`}
-                                  >
-                                    {selected ? '✓ ' : '+ '} {m}
-                                  </button>
-                                );
-                              })}
-                            </div>
+                        <div>
+                          <div className="flex justify-between items-center mb-1.5">
+                            <label className="text-xs font-semibold text-slate-300">
+                              Select Metrics to Compare (Click to Choose)
+                            </label>
+                            <span className="text-[11px] text-indigo-400 font-mono">
+                              {selectedMetrics.length} selected
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-1.5 p-3 rounded-lg bg-slate-950/60 border border-slate-800">
+                            {numericCols.map(m => {
+                              const isSelected = selectedMetrics.includes(m);
+                              return (
+                                <button
+                                  key={m}
+                                  onClick={() => {
+                                    if (isSelected) {
+                                      setSelectedMetrics(selectedMetrics.filter(x => x !== m));
+                                    } else {
+                                      setSelectedMetrics([...selectedMetrics, m]);
+                                    }
+                                  }}
+                                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 ${
+                                    isSelected
+                                      ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
+                                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800 border border-slate-700/70'
+                                  }`}
+                                >
+                                  <span>{isSelected ? '✓' : '+'}</span>
+                                  <span>{m}</span>
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
+                      </div>
 
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleCompare}
-                            disabled={compareLoading}
-                            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
-                          >
-                            {compareLoading ? 'Computing...' : 'Run Comparative Analysis'}
-                          </button>
-                          {compareResult && (
-                            <button
-                              onClick={() => openCodeModal('compare')}
-                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-2 rounded-lg text-xs font-medium transition"
-                            >
-                              &lt;/&gt; View Code
-                            </button>
-                          )}
-                        </div>
+                      <div className="flex justify-end pt-2">
+                        <button
+                          onClick={handleCompare}
+                          disabled={compareLoading || selectedMetrics.length === 0}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-40"
+                        >
+                          {compareLoading ? 'Computing Differentials...' : 'Run Comparative Analysis'}
+                        </button>
                       </div>
                     </div>
 
@@ -617,13 +660,13 @@ export default function Home() {
                             <select
                               value={chartType}
                               onChange={e => setChartType(e.target.value)}
-                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-40"
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-44"
                             >
                               <option value="bar">Bar Chart</option>
                               <option value="line">Line Chart</option>
                               <option value="scatter">Scatter Plot</option>
                               <option value="pie">Pie Chart</option>
-                              <option value="heatmap">Heatmap</option>
+                              <option value="heatmap">Correlation Heatmap</option>
                               <option value="boxplot">Boxplot</option>
                               <option value="violin">Violin Plot</option>
                             </select>
@@ -634,42 +677,32 @@ export default function Home() {
                             <select
                               value={chartX}
                               onChange={e => setChartX(e.target.value)}
-                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-52"
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-56"
                             >
                               {allColumns.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </div>
 
                           <div>
-                            <label className="text-xs font-semibold text-slate-400 block mb-1">Y-Axis Column (Optional)</label>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Y-Axis Column (Metric)</label>
                             <select
                               value={chartY}
                               onChange={e => setChartY(e.target.value)}
-                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-52"
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-56"
                             >
-                              <option value="">-- None / Frequency Count --</option>
+                              <option value="">-- Frequency Count (Univariate) --</option>
                               {numericCols.map(c => <option key={c} value={c}>{c}</option>)}
                             </select>
                           </div>
                         </div>
 
-                        <div className="flex gap-2">
-                          <button
-                            onClick={handleChart}
-                            disabled={chartLoading}
-                            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
-                          >
-                            {chartLoading ? 'Rendering...' : 'Generate Visualization'}
-                          </button>
-                          {chartResult && (
-                            <button
-                              onClick={() => openCodeModal('chart')}
-                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-2 rounded-lg text-xs font-medium transition"
-                            >
-                              &lt;/&gt; View Code
-                            </button>
-                          )}
-                        </div>
+                        <button
+                          onClick={handleChart}
+                          disabled={chartLoading}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                        >
+                          {chartLoading ? 'Rendering Chart...' : 'Generate Visualization'}
+                        </button>
                       </div>
                     </div>
 
@@ -687,36 +720,23 @@ export default function Home() {
                           </div>
                         )}
 
-                        {/* Chart Preview Card */}
+                        {/* Interactive Visual Chart Container */}
                         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
                           <div className="flex justify-between items-center border-b border-slate-800 pb-2">
                             <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                              {chartType.toUpperCase()} Spec &bull; {chartX} {chartY ? `vs ${chartY}` : ''}
+                              {chartType.toUpperCase()} Visual &bull; {chartX} {chartY ? `vs ${chartY}` : ''}
                             </span>
-                            <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Plotly.js Spec Ready</span>
+                            <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Interactive Visual Plot</span>
                           </div>
 
-                          {/* Data points preview */}
-                          {chartResult.plotly_spec?.data?.[0]?.x && (
-                            <div className="max-h-72 overflow-y-auto">
-                              <table className="w-full text-xs text-left">
-                                <thead>
-                                  <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
-                                    <th className="py-1.5 px-3">Item / Category</th>
-                                    <th className="py-1.5 px-3">Value</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-800/40">
-                                  {chartResult.plotly_spec.data[0].x.slice(0, 20).map((xVal: any, idx: number) => (
-                                    <tr key={idx} className="hover:bg-slate-800/40 text-slate-300">
-                                      <td className="py-1.5 px-3 font-semibold text-white">{String(xVal)}</td>
-                                      <td className="py-1.5 px-3 font-mono">{String(chartResult.plotly_spec.data[0].y?.[idx] ?? '-')}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
+                          {/* The real rendered Plotly chart element */}
+                          <div
+                            ref={chartContainerRef}
+                            id="plotly-chart-container"
+                            className="w-full h-96 rounded-lg overflow-hidden flex items-center justify-center"
+                          >
+                            <p className="text-xs text-slate-500">Loading interactive chart rendering...</p>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -728,14 +748,14 @@ export default function Home() {
                   <div className="space-y-6">
                     {/* Controls Bar */}
                     <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-                      <div className="flex flex-wrap items-end justify-between gap-4">
+                      <div className="space-y-3">
                         <div className="flex flex-wrap items-center gap-4">
                           <div>
                             <label className="text-xs font-semibold text-slate-400 block mb-1">Algorithm Task</label>
                             <select
                               value={mlTask}
                               onChange={e => setMlTask(e.target.value as any)}
-                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-44"
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-48"
                             >
                               <option value="kmeans">K-Means Clustering</option>
                               <option value="regression">Linear Regression</option>
@@ -744,48 +764,61 @@ export default function Home() {
 
                           {mlTask === 'regression' && (
                             <div>
-                              <label className="text-xs font-semibold text-slate-400 block mb-1">Target Variable (Y)</label>
+                              <label className="text-xs font-semibold text-slate-400 block mb-1">Target Variable (Y / Predict)</label>
                               <select
                                 value={mlTarget}
                                 onChange={e => setMlTarget(e.target.value)}
-                                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-48"
+                                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-56"
                               >
                                 {numericCols.map(c => <option key={c} value={c}>{c}</option>)}
                               </select>
                             </div>
                           )}
-
-                          <div>
-                            <label className="text-xs font-semibold text-slate-400 block mb-1">Feature Columns (Numeric)</label>
-                            <div className="flex flex-wrap gap-1.5 max-w-lg">
-                              {numericCols.filter(c => c !== mlTarget).map(m => {
-                                const selected = mlFeatures.includes(m);
-                                return (
-                                  <button
-                                    key={m}
-                                    onClick={() => {
-                                      if (selected) {
-                                        if (mlFeatures.length > 1) setMlFeatures(mlFeatures.filter(x => x !== m));
-                                      } else {
-                                        setMlFeatures([...mlFeatures, m]);
-                                      }
-                                    }}
-                                    className={`text-[11px] px-2.5 py-1 rounded-md font-medium transition ${
-                                      selected ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
-                                    }`}
-                                  >
-                                    {selected ? '✓ ' : '+ '} {m}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
                         </div>
 
+                        <div>
+                          <div className="flex justify-between items-center mb-1.5">
+                            <label className="text-xs font-semibold text-slate-300">
+                              Feature Columns (Numeric) - Click to Select
+                            </label>
+                            <span className="text-[11px] text-indigo-400 font-mono">
+                              {mlFeatures.length} selected
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-1.5 p-3 rounded-lg bg-slate-950/60 border border-slate-800">
+                            {numericCols.filter(c => mlTask !== 'regression' || c !== mlTarget).map(m => {
+                              const isSelected = mlFeatures.includes(m);
+                              return (
+                                <button
+                                  key={m}
+                                  onClick={() => {
+                                    if (isSelected) {
+                                      setMlFeatures(mlFeatures.filter(x => x !== m));
+                                    } else {
+                                      setMlFeatures([...mlFeatures, m]);
+                                    }
+                                  }}
+                                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 ${
+                                    isSelected
+                                      ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/40'
+                                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800 border border-slate-700/70'
+                                  }`}
+                                >
+                                  <span>{isSelected ? '✓' : '+'}</span>
+                                  <span>{m}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end pt-2">
                         <button
                           onClick={handleML}
-                          disabled={mlLoading}
-                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                          disabled={mlLoading || mlFeatures.length === 0}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2.5 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-40"
                         >
                           {mlLoading ? 'Training Model...' : `Run ${mlTask === 'kmeans' ? 'Clustering' : 'Regression'}`}
                         </button>
@@ -799,8 +832,8 @@ export default function Home() {
                         {mlTask === 'regression' && (
                           <div className="space-y-4">
                             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                              <KPICard title="R² Test Score" value={mlResult.r2_test} badge="Test Set Evaluation" color={mlResult.r2_test >= 0.7 ? 'emerald' : 'amber'} />
-                              <KPICard title="R² Train Score" value={mlResult.r2_train} badge="Train Set Performance" />
+                              <KPICard title="R² Test Score" value={mlResult.r2_test} badge="Test Evaluation" color={mlResult.r2_test >= 0.7 ? 'emerald' : 'amber'} />
+                              <KPICard title="R² Train Score" value={mlResult.r2_train} badge="Train Score" />
                               <KPICard title="Mean Squared Error" value={mlResult.mse_test?.toLocaleString()} badge="Test MSE" />
                               <KPICard title="Train / Test Split" value={`${mlResult.n_train} / ${mlResult.n_test}`} badge="Samples" />
                             </div>
@@ -815,7 +848,7 @@ export default function Home() {
                                       <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
                                         <th className="py-2.5 px-3">Predictor Feature</th>
                                         <th className="py-2.5 px-3">Standardized Weight</th>
-                                        <th className="py-2.5 px-3">Direction</th>
+                                        <th className="py-2.5 px-3">Impact Direction</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-800/60">
@@ -937,60 +970,6 @@ export default function Home() {
             </aside>
           )}
         </div>
-
-        {/* View Code Modal */}
-        {codeModalOpen && (
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
-              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                  <span>&lt;/&gt;</span> Export Analysis Code (Pandas &amp; SQL)
-                </h3>
-                <button onClick={() => setCodeModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
-              </div>
-
-              <div className="p-5 overflow-y-auto space-y-4">
-                {codeLoading ? (
-                  <p className="text-xs text-slate-400">Generating reproducible code snippets...</p>
-                ) : codeSnippet ? (
-                  <>
-                    <div>
-                      <div className="flex justify-between items-center mb-1.5">
-                        <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Python (Pandas)</span>
-                        <button
-                          onClick={() => navigator.clipboard.writeText(codeSnippet.pandas_code)}
-                          className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded border border-slate-700"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre">
-                        {codeSnippet.pandas_code}
-                      </pre>
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between items-center mb-1.5">
-                        <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">SQL (Standard ANSI)</span>
-                        <button
-                          onClick={() => navigator.clipboard.writeText(codeSnippet.sql_code)}
-                          className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded border border-slate-700"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-amber-400 overflow-x-auto whitespace-pre">
-                        {codeSnippet.sql_code}
-                      </pre>
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-red-400">Could not retrieve code snippet.</p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </>
   );
