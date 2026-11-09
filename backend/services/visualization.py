@@ -3,7 +3,7 @@ Generates Plotly chart specifications and auto-commentary for various chart type
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from .profiling import _load_file
 
@@ -55,7 +55,7 @@ def _generate_commentary(chart_type: str, df: pd.DataFrame, x: str, y: Optional[
 
 
 def generate_chart_spec(
-    file_path: str,
+    file_or_df: Union[str, pd.DataFrame],
     chart_type: str,
     x: str,
     y: Optional[str] = None,
@@ -63,7 +63,7 @@ def generate_chart_spec(
     title: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate a Plotly-compatible chart specification and commentary."""
-    df = _load_file(file_path)
+    df = file_or_df if isinstance(file_or_df, pd.DataFrame) else _load_file(file_or_df)
     _validate_chart_config(chart_type, x, y, df)
 
     # For charts with massive rows, downsample to 2000 points for fluid UI rendering

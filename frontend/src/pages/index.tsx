@@ -44,6 +44,16 @@ export default function Home() {
   const [numericCols, setNumericCols] = useState<string[]>([]);
   const [catCols, setCatCols] = useState<string[]>([]);
 
+  // ---- Global Filter State ----
+  const [globalFilters, setGlobalFilters] = useState<Record<string, any>>({});
+  const [filterCol, setFilterCol] = useState<string>('');
+  const [filterColType, setFilterColType] = useState<'categorical' | 'numeric' | null>(null);
+  const [availableValues, setAvailableValues] = useState<string[]>([]);
+  const [catSelected, setCatSelected] = useState<string[]>([]);
+  const [numMin, setNumMin] = useState<string>('');
+  const [numMax, setNumMax] = useState<string>('');
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+
   // RAG drawer
   const [ragOpen, setRagOpen] = useState(false);
   const [ragQuestion, setRagQuestion] = useState('');
@@ -55,6 +65,7 @@ export default function Home() {
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<any>(null);
   const [compareLoading, setCompareLoading] = useState(false);
+  const compareChartRef = useRef<HTMLDivElement>(null);
 
   // Chart state
   const [chartType, setChartType] = useState('bar');
@@ -76,7 +87,7 @@ export default function Home() {
 
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-  // ---- Handle Column Setup on Upload (User Selects Their Own Metrics) ----
+  // ---- Handle Column Setup on Upload ----
   useEffect(() => {
     if (profile) {
       const all = Object.keys(profile.missing_percentage);
@@ -87,19 +98,40 @@ export default function Home() {
       setNumericCols(num);
       setCatCols(cat);
 
-      // Default X axis / group by to the first category, but LEAVE METRICS & FEATURES EMPTY FOR USER TO SELECT
       setGroupBy(cat[0] || all[0] || '');
-      setSelectedMetrics([]); // User selects their own metrics
+      setSelectedMetrics([]); // User explicitly selects
 
       setChartX(cat[0] || all[0] || '');
       setChartY(num[0] || '');
 
       setMlTarget(num[0] || '');
-      setMlFeatures([]); // User selects their own feature columns
+      setMlFeatures([]); // User explicitly selects
+
+      setFilterCol(cat[0] || all[0] || '');
     }
   }, [profile]);
 
-  // ---- Render Plotly Chart When chartResult is updated ----
+  // ---- Fetch filter values when filter column changes ----
+  useEffect(() => {
+    if (datasetId && filterCol) {
+      fetch(`${API}/datasets/${datasetId}/values?column=${encodeURIComponent(filterCol)}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.type === 'categorical') {
+            setFilterColType('categorical');
+            setAvailableValues(data.values || []);
+            setCatSelected([]);
+          } else if (data.type === 'numeric') {
+            setFilterColType('numeric');
+            setNumMin(String(data.min ?? ''));
+            setNumMax(String(data.max ?? ''));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [filterCol, datasetId]);
+
+  // ---- Render Plotly Visualizer Chart ----
   useEffect(() => {
     if (chartResult && chartResult.plotly_spec && typeof window !== 'undefined') {
       const renderPlot = () => {
@@ -110,16 +142,8 @@ export default function Home() {
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
             font: { color: '#94a3b8', family: 'system-ui, sans-serif' },
-            xaxis: {
-              ...spec.layout?.xaxis,
-              gridcolor: '#1e293b',
-              zerolinecolor: '#334155',
-            },
-            yaxis: {
-              ...spec.layout?.yaxis,
-              gridcolor: '#1e293b',
-              zerolinecolor: '#334155',
-            },
+            xaxis: { ...spec.layout?.xaxis, gridcolor: '#1e293b', zerolinecolor: '#334155' },
+            yaxis: { ...spec.layout?.yaxis, gridcolor: '#1e293b', zerolinecolor: '#334155' },
             margin: { t: 40, r: 25, l: 60, b: 60 },
             autosize: true,
           };
@@ -127,19 +151,55 @@ export default function Home() {
             responsive: true,
             displayModeBar: true,
             displaylogo: false,
-            modeBarButtonsToRemove: ['lasso2d', 'select2d'],
           });
         }
       };
 
-      if (window.Plotly) {
-        renderPlot();
-      } else {
-        const timer = setTimeout(renderPlot, 500);
-        return () => clearTimeout(timer);
-      }
+      if (window.Plotly) renderPlot();
+      else setTimeout(renderPlot, 500);
     }
   }, [chartResult, activeTab]);
+
+  // ---- Render Plotly Comparative Chart ----
+  useEffect(() => {
+    if (compareResult && compareResult.grouped_means && compareResult.grouped_means.length > 0 && typeof window !== 'undefined') {
+      const renderComparePlot = () => {
+        if (window.Plotly && compareChartRef.current) {
+          const xCategories = compareResult.grouped_means.map((r: any) => String(r[groupBy]));
+          const traces = selectedMetrics.map((m, idx) => {
+            const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4'];
+            return {
+              type: 'bar',
+              name: m,
+              x: xCategories,
+              y: compareResult.grouped_means.map((r: any) => r[m] ?? 0),
+              marker: { color: colors[idx % colors.length] },
+            };
+          });
+
+          const layout = {
+            barmode: 'group',
+            title: `Comparison by ${groupBy}`,
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            font: { color: '#94a3b8', family: 'system-ui, sans-serif' },
+            xaxis: { gridcolor: '#1e293b' },
+            yaxis: { gridcolor: '#1e293b', title: 'Average Value' },
+            margin: { t: 40, r: 25, l: 60, b: 60 },
+            autosize: true,
+          };
+          window.Plotly.newPlot(compareChartRef.current, traces, layout, {
+            responsive: true,
+            displayModeBar: true,
+            displaylogo: false,
+          });
+        }
+      };
+
+      if (window.Plotly) renderComparePlot();
+      else setTimeout(renderComparePlot, 500);
+    }
+  }, [compareResult, activeTab, selectedMetrics, groupBy]);
 
   // ---- Upload ----
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -159,6 +219,7 @@ export default function Home() {
       setDatasetId(data.dataset_id);
       setFilename(data.filename);
       setProfile(data.profile);
+      setGlobalFilters({});
       setCompareResult(null);
       setChartResult(null);
       setMlResult(null);
@@ -168,6 +229,32 @@ export default function Home() {
     } finally {
       setUploading(false);
     }
+  };
+
+  // ---- Add Filter ----
+  const handleAddFilter = () => {
+    if (!filterCol) return;
+    if (filterColType === 'categorical') {
+      if (catSelected.length === 0) {
+        alert('Please select at least one value to filter by.');
+        return;
+      }
+      setGlobalFilters(prev => ({ ...prev, [filterCol]: catSelected }));
+    } else if (filterColType === 'numeric') {
+      const minVal = numMin ? parseFloat(numMin) : undefined;
+      const maxVal = numMax ? parseFloat(numMax) : undefined;
+      setGlobalFilters(prev => ({
+        ...prev,
+        [filterCol]: { min: minVal, max: maxVal },
+      }));
+    }
+    setFilterDrawerOpen(false);
+  };
+
+  const removeFilter = (col: string) => {
+    const next = { ...globalFilters };
+    delete next[col];
+    setGlobalFilters(next);
   };
 
   // ---- Run Compare ----
@@ -182,7 +269,11 @@ export default function Home() {
       const res = await fetch(`${API}/datasets/${datasetId}/compare`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group_by: groupBy, metrics: selectedMetrics }),
+        body: JSON.stringify({
+          group_by: groupBy,
+          metrics: selectedMetrics,
+          filters: Object.keys(globalFilters).length > 0 ? globalFilters : undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Comparative analysis failed');
@@ -209,6 +300,7 @@ export default function Home() {
           chart_type: chartType,
           x: chartX,
           y: chartY || undefined,
+          filters: Object.keys(globalFilters).length > 0 ? globalFilters : undefined,
         }),
       });
       const data = await res.json();
@@ -238,6 +330,7 @@ export default function Home() {
           columns: mlFeatures,
           target: mlTask === 'regression' ? mlTarget : undefined,
           k: 3,
+          filters: Object.keys(globalFilters).length > 0 ? globalFilters : undefined,
         }),
       });
       const data = await res.json();
@@ -292,11 +385,12 @@ export default function Home() {
     }
   };
 
+  const activeFilterCount = Object.keys(globalFilters).length;
+
   return (
     <>
       <Head>
         <title>AADES – Adaptive Auto Data Evaluation System v3.0</title>
-        {/* Load Plotly.js for visual chart rendering */}
         <script src="https://cdn.plot.ly/plotly-2.30.0.min.js" async></script>
       </Head>
 
@@ -345,7 +439,7 @@ export default function Home() {
                 <span className="text-xs text-slate-300 font-medium block">
                   {uploading ? 'Parsing & Profiling...' : 'Upload CSV / Excel / JSON'}
                 </span>
-                <span className="text-[10px] text-slate-500 mt-1 block">Auto-generates profiling &amp; alerts</span>
+                <span className="text-[10px] text-slate-500 mt-1 block">Instant profiling &amp; anomaly detection</span>
               </label>
               {error && <p className="text-red-400 text-xs mt-2 bg-red-950/50 p-2 rounded border border-red-800">{error}</p>}
             </div>
@@ -402,7 +496,130 @@ export default function Home() {
               </div>
             ) : (
               <div className="max-w-6xl mx-auto space-y-6">
-                {/* Tabs */}
+                {/* Global Filter Bar */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm">🔍</span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                        Global Pre-Analysis Filters {activeFilterCount > 0 && `(${activeFilterCount} Active)`}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setFilterDrawerOpen(!filterDrawerOpen)}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                    >
+                      {filterDrawerOpen ? '▲ Close Filter Config' : '+ Add / Edit Filter'}
+                    </button>
+                  </div>
+
+                  {/* Active Filter Chips */}
+                  {activeFilterCount > 0 ? (
+                    <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-800/80">
+                      {Object.entries(globalFilters).map(([col, criteria]) => {
+                        let label = '';
+                        if (Array.isArray(criteria)) {
+                          label = `${col}: ${criteria.join(', ')}`;
+                        } else if (typeof criteria === 'object') {
+                          label = `${col}: ${criteria.min ?? '-\u221E'} to ${criteria.max ?? '+\u221E'}`;
+                        }
+                        return (
+                          <span
+                            key={col}
+                            className="bg-indigo-950/80 border border-indigo-800 text-indigo-300 text-xs px-2.5 py-1 rounded-lg flex items-center gap-1.5 shadow-sm"
+                          >
+                            <span>{label}</span>
+                            <button
+                              onClick={() => removeFilter(col)}
+                              className="text-indigo-400 hover:text-white font-bold ml-1 text-sm"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        );
+                      })}
+                      <button
+                        onClick={() => setGlobalFilters({})}
+                        className="text-[11px] text-slate-500 hover:text-slate-300 underline self-center ml-2"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 italic">No global filters applied. Analyses evaluate all {profile.row_count.toLocaleString()} rows.</p>
+                  )}
+
+                  {/* Filter Configuration Drawer */}
+                  {filterDrawerOpen && (
+                    <div className="pt-3 border-t border-slate-800 space-y-3 bg-slate-950/50 p-3.5 rounded-lg">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="text-xs text-slate-400">Filter Column:</label>
+                        <select
+                          value={filterCol}
+                          onChange={e => setFilterCol(e.target.value)}
+                          className="bg-slate-800 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-200 w-52"
+                        >
+                          {allColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+
+                      {filterColType === 'categorical' && (
+                        <div>
+                          <label className="text-xs text-slate-400 block mb-1">Select Categories to Include:</label>
+                          <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2 bg-slate-900 rounded border border-slate-800">
+                            {availableValues.map(v => {
+                              const isChecked = catSelected.includes(v);
+                              return (
+                                <button
+                                  key={v}
+                                  onClick={() => {
+                                    if (isChecked) setCatSelected(catSelected.filter(x => x !== v));
+                                    else setCatSelected([...catSelected, v]);
+                                  }}
+                                  className={`text-xs px-2.5 py-1 rounded font-medium transition ${
+                                    isChecked ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 border border-slate-700'
+                                  }`}
+                                >
+                                  {isChecked ? '✓ ' : '+ '} {v}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {filterColType === 'numeric' && (
+                        <div className="flex items-center gap-3 text-xs text-slate-400">
+                          <span>Min:</span>
+                          <input
+                            type="number"
+                            value={numMin}
+                            onChange={e => setNumMin(e.target.value)}
+                            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200 w-28"
+                          />
+                          <span>Max:</span>
+                          <input
+                            type="number"
+                            value={numMax}
+                            onChange={e => setNumMax(e.target.value)}
+                            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-200 w-28"
+                          />
+                        </div>
+                      )}
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          onClick={handleAddFilter}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded text-xs font-semibold"
+                        >
+                          Apply Filter
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Workspace Navigation Tabs */}
                 <div className="flex gap-2 border-b border-slate-800 pb-2">
                   {[
                     { id: 'summary', label: 'Overall Summary', icon: '📊' },
@@ -526,7 +743,7 @@ export default function Home() {
                         <div>
                           <div className="flex justify-between items-center mb-1.5">
                             <label className="text-xs font-semibold text-slate-300">
-                              Select Metrics to Compare (Click to Choose)
+                              Metrics to Compare (Numeric) - Click to Select
                             </label>
                             <span className="text-[11px] text-indigo-400 font-mono">
                               {selectedMetrics.length} selected
@@ -575,6 +792,18 @@ export default function Home() {
                     {/* Results Display */}
                     {compareResult && (
                       <div className="space-y-6">
+                        {/* Interactive Visual Comparison Bar Chart */}
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                          <h3 className="text-sm font-bold text-slate-200">Visual Comparison Chart</h3>
+                          <div
+                            ref={compareChartRef}
+                            id="plotly-compare-container"
+                            className="w-full h-80 rounded-lg overflow-hidden flex items-center justify-center"
+                          >
+                            <p className="text-xs text-slate-500">Rendering comparative chart...</p>
+                          </div>
+                        </div>
+
                         {/* Grouped Means Table */}
                         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
                           <h3 className="text-sm font-bold text-slate-200">Group-Wise Mean Differentials</h3>

@@ -17,11 +17,20 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def _get_file_path(dataset_id: str) -> str:
-    """Look up the file path for a dataset_id, or raise 404."""
+    """Look up the file path for a dataset_id, auto-discovering from UPLOAD_DIR if needed."""
     path = _file_store.get(dataset_id)
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found. Upload a file first.")
-    return path
+    if path and os.path.exists(path):
+        return path
+
+    # Auto-discover from persistent UPLOAD_DIR
+    if os.path.exists(UPLOAD_DIR):
+        for fname in os.listdir(UPLOAD_DIR):
+            if os.path.splitext(fname)[0] == dataset_id or fname == dataset_id:
+                cand = os.path.join(UPLOAD_DIR, fname)
+                _file_store[dataset_id] = cand
+                return cand
+
+    raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found. Upload a file first.")
 
 
 def get_dataset_context(dataset_id: str) -> Dict[str, Any]:
@@ -33,6 +42,24 @@ def get_dataset_context(dataset_id: str) -> Dict[str, Any]:
         profile = profile_dataset(path)
         _profile_store[dataset_id] = profile
     return {"file_path": path, "profile": profile}
+
+
+def _apply_filters(df, filters: Optional[Dict[str, Any]]) -> Any:
+    """Filter DataFrame based on categorical multi-select or numeric range."""
+    if not filters:
+        return df
+    filtered = df.copy()
+    for col, criteria in filters.items():
+        if col not in filtered.columns:
+            continue
+        if isinstance(criteria, list) and criteria:
+            filtered = filtered[filtered[col].astype(str).isin([str(c) for c in criteria])]
+        elif isinstance(criteria, dict):
+            if criteria.get("min") is not None:
+                filtered = filtered[filtered[col] >= float(criteria["min"])]
+            if criteria.get("max") is not None:
+                filtered = filtered[filtered[col] <= float(criteria["max"])]
+    return filtered
 
 
 # ---------- Upload + Auto-Profile ----------
@@ -92,21 +119,54 @@ async def apply_filters(dataset_id: str, req: FilterRequest):
     return {"dataset_id": dataset_id, "filtered_view_id": f"filter-{dataset_id}", "applied_filters": req.filters}
 
 
+# ---------- Column Values for Filter UI ----------
+
+@router.get("/{dataset_id}/values", summary="Get distinct categories or numeric bounds for a column")
+async def get_column_values(dataset_id: str, column: str):
+    file_path = _get_file_path(dataset_id)
+    from ..services.profiling import _load_file
+    df = _load_file(file_path)
+
+    if column not in df.columns:
+        raise HTTPException(status_code=404, detail=f"Column '{column}' not found in dataset.")
+
+    series = df[column].dropna()
+    import pandas as pd
+    if pd.api.types.is_numeric_dtype(series):
+        return {
+            "type": "numeric",
+            "min": round(float(series.min()), 2),
+            "max": round(float(series.max()), 2),
+        }
+    else:
+        # Up to 50 unique categories
+        uniques = [str(x) for x in series.unique()[:50].tolist()]
+        return {
+            "type": "categorical",
+            "values": uniques,
+        }
+
+
 # ---------- Comparative Analysis ----------
 
 class CompareRequest(BaseModel):
     group_by: str
     metrics: List[str]
+    filters: Optional[Dict[str, Any]] = None
 
 @router.post("/{dataset_id}/compare", summary="Run comparative analysis")
 async def compare(dataset_id: str, req: CompareRequest):
     file_path = _get_file_path(dataset_id)
+    from ..services.profiling import _load_file
+    df = _load_file(file_path)
+    filtered_df = _apply_filters(df, req.filters)
+
     from ..services.comparative import comparative_analysis as run_compare
     try:
-        result = run_compare(file_path, req.group_by, req.metrics)
+        result = run_compare(filtered_df, req.group_by, req.metrics)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return {"analysis_id": f"compare-{dataset_id}", "result": result}
+    return {"analysis_id": f"compare-{dataset_id}", "result": result, "active_rows": len(filtered_df)}
 
 
 # ---------- Chart Generation ----------
@@ -117,14 +177,19 @@ class ChartRequest(BaseModel):
     y: Optional[str] = None
     color: Optional[str] = None
     title: Optional[str] = None
+    filters: Optional[Dict[str, Any]] = None
 
 @router.post("/{dataset_id}/charts", summary="Generate chart spec and commentary")
 async def generate_chart(dataset_id: str, req: ChartRequest):
     file_path = _get_file_path(dataset_id)
+    from ..services.profiling import _load_file
+    df = _load_file(file_path)
+    filtered_df = _apply_filters(df, req.filters)
+
     from ..services.visualization import generate_chart_spec
     try:
         result = generate_chart_spec(
-            file_path=file_path,
+            file_or_df=filtered_df,
             chart_type=req.chart_type,
             x=req.x,
             y=req.y,
@@ -133,7 +198,7 @@ async def generate_chart(dataset_id: str, req: ChartRequest):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return {"chart_id": f"chart-{dataset_id}", **result}
+    return {"chart_id": f"chart-{dataset_id}", **result, "active_rows": len(filtered_df)}
 
 
 # ---------- ML ----------
@@ -144,24 +209,29 @@ class MLRequest(BaseModel):
     target: Optional[str] = None
     k: int = 3
     test_size: float = 0.2
+    filters: Optional[Dict[str, Any]] = None
 
 @router.post("/{dataset_id}/ml", summary="Run ML task (K-Means or Linear Regression)")
 async def run_ml(dataset_id: str, req: MLRequest):
     file_path = _get_file_path(dataset_id)
+    from ..services.profiling import _load_file
+    df = _load_file(file_path)
+    filtered_df = _apply_filters(df, req.filters)
+
     try:
         if req.task == "kmeans":
             from ..services.ml import run_kmeans
-            result = run_kmeans(file_path, req.columns, k=req.k)
+            result = run_kmeans(filtered_df, req.columns, k=req.k)
         elif req.task == "regression":
             if not req.target:
                 raise HTTPException(status_code=400, detail="Linear regression requires a 'target' column.")
             from ..services.ml import run_linear_regression
-            result = run_linear_regression(file_path, req.columns, req.target, test_size=req.test_size)
+            result = run_linear_regression(filtered_df, req.columns, req.target, test_size=req.test_size)
         else:
             raise HTTPException(status_code=400, detail=f"Unknown ML task '{req.task}'. Use 'kmeans' or 'regression'.")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return {"ml_task_id": f"ml-{dataset_id}", "result": result}
+    return {"ml_task_id": f"ml-{dataset_id}", "result": result, "active_rows": len(filtered_df)}
 
 
 # ---------- Code Export ----------

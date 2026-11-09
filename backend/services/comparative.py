@@ -7,12 +7,12 @@ computes:
 """
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 
 from .profiling import _load_file
 
-def comparative_analysis(file_path: str, group_by: str, metrics: List[str]) -> Dict[str, Any]:
-    df = _load_file(file_path)
+def comparative_analysis(file_or_df: Union[str, pd.DataFrame], group_by: str, metrics: List[str]) -> Dict[str, Any]:
+    df = file_or_df if isinstance(file_or_df, pd.DataFrame) else _load_file(file_or_df)
     # Ensure columns exist
     missing = [col for col in [group_by] + metrics if col not in df.columns]
     if missing:

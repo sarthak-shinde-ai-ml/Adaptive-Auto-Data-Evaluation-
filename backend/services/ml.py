@@ -6,7 +6,7 @@ os.environ["LOKY_MAX_CPU_COUNT"] = "2"
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 from .profiling import _load_file
 
@@ -26,7 +26,7 @@ def _prepare_numeric(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
 
 
 def run_kmeans(
-    file_path: str,
+    file_or_df: Union[str, pd.DataFrame],
     columns: List[str],
     k: int = 3,
     max_k_elbow: int = 10,
@@ -38,7 +38,7 @@ def run_kmeans(
     from sklearn.preprocessing import StandardScaler
     from sklearn.cluster import KMeans
 
-    df = _load_file(file_path)
+    df = file_or_df if isinstance(file_or_df, pd.DataFrame) else _load_file(file_or_df)
     subset = _prepare_numeric(df, columns)
 
     scaler = StandardScaler()
@@ -73,7 +73,7 @@ def run_kmeans(
 
 
 def run_linear_regression(
-    file_path: str,
+    file_or_df: Union[str, pd.DataFrame],
     feature_columns: List[str],
     target_column: str,
     test_size: float = 0.2,
@@ -88,7 +88,7 @@ def run_linear_regression(
     from sklearn.linear_model import LinearRegression
     from sklearn.metrics import r2_score, mean_squared_error
 
-    df = _load_file(file_path)
+    df = file_or_df if isinstance(file_or_df, pd.DataFrame) else _load_file(file_or_df)
     all_cols = feature_columns + [target_column]
     subset = _prepare_numeric(df, all_cols)
 
