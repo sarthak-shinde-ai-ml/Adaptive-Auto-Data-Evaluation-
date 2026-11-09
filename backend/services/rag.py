@@ -126,3 +126,4 @@ def generate_rag_insight(
         "confidence": confidence,
         "citations": citations,
     }
+
