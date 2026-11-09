@@ -17,42 +17,39 @@ def _validate_chart_config(chart_type: str, x: Optional[str], y: Optional[str], 
         raise ValueError(f"Unsupported chart type '{chart_type}'. Supported: {SUPPORTED_CHARTS}")
     cols = df.columns.tolist()
     if x and x not in cols:
-        raise ValueError(f"Column '{x}' not found in dataset. Available: {cols}")
+        raise ValueError(f"Column '{x}' not found in dataset. Available: {cols[:10]}...")
     if y and y not in cols:
-        raise ValueError(f"Column '{y}' not found in dataset. Available: {cols}")
+        raise ValueError(f"Column '{y}' not found in dataset. Available: {cols[:10]}...")
     if chart_type == "pie":
-        if not x or not y:
-            raise ValueError("Pie chart requires both a categorical column (x) and a numeric column (y).")
-        if not pd.api.types.is_numeric_dtype(df[y]):
-            raise ValueError(f"Pie chart y-axis column '{y}' must be numeric.")
+        if not x:
+            raise ValueError("Pie chart requires a categorical column (X).")
 
 
 def _generate_commentary(chart_type: str, df: pd.DataFrame, x: str, y: Optional[str]) -> str:
     """Generate auto-descriptive commentary for a chart."""
     lines: List[str] = []
-    lines.append(f"This {chart_type} chart visualizes '{x}'" + (f" against '{y}'" if y else "") + ".")
+    lines.append(f"This {chart_type.upper()} chart visualizes distribution of '{x}'" + (f" against '{y}'" if y else "") + ".")
 
-    if y and pd.api.types.is_numeric_dtype(df[y]):
+    if y and y in df.columns and pd.api.types.is_numeric_dtype(df[y]):
         series = df[y].dropna()
         if not series.empty:
             lines.append(f"'{y}' ranges from {series.min():.2f} to {series.max():.2f} "
                          f"(mean: {series.mean():.2f}, std: {series.std():.2f}).")
-            # Identify outliers
             q1, q3 = series.quantile(0.25), series.quantile(0.75)
             iqr = q3 - q1
-            outlier_count = ((series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)).sum()
+            outlier_count = int(((series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)).sum())
             if outlier_count > 0:
-                lines.append(f"There are {outlier_count} potential outlier(s) detected using the IQR method.")
+                lines.append(f"Detected {outlier_count} potential statistical outlier(s) via IQR method.")
 
-    if x and pd.api.types.is_numeric_dtype(df[x]):
+    if x and x in df.columns and pd.api.types.is_numeric_dtype(df[x]):
         series = df[x].dropna()
-        skew = series.skew()
+        skew = float(series.skew())
         if abs(skew) > 1:
             direction = "positively" if skew > 0 else "negatively"
-            lines.append(f"'{x}' is {direction} skewed (skewness: {skew:.2f}).")
-    elif x and not pd.api.types.is_numeric_dtype(df[x]):
+            lines.append(f"'{x}' shows {direction} skewed distribution (skewness: {skew:.2f}).")
+    elif x and x in df.columns and not pd.api.types.is_numeric_dtype(df[x]):
         n_unique = df[x].nunique()
-        lines.append(f"'{x}' has {n_unique} unique categor{'y' if n_unique == 1 else 'ies'}.")
+        lines.append(f"'{x}' contains {n_unique} distinct categor{'y' if n_unique == 1 else 'ies'}.")
 
     return " ".join(lines)
 
@@ -65,70 +62,108 @@ def generate_chart_spec(
     color: Optional[str] = None,
     title: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Generate a Plotly-compatible chart specification and commentary.
-
-    Returns
-    -------
-    dict with keys: chart_type, plotly_spec, commentary
-    """
+    """Generate a Plotly-compatible chart specification and commentary."""
     df = _load_file(file_path)
     _validate_chart_config(chart_type, x, y, df)
 
-    # Build a simplified Plotly spec (the frontend uses Plotly.js to render)
-    spec: Dict[str, Any] = {"data": [], "layout": {"title": title or f"{chart_type.title()} Chart"}}
+    # For charts with massive rows, downsample to 2000 points for fluid UI rendering
+    sample_df = df.sample(2000, random_state=42) if len(df) > 2000 and chart_type in ["scatter", "line"] else df
+
+    spec: Dict[str, Any] = {"data": [], "layout": {"title": title or f"{chart_type.title()} Analysis"}}
 
     if chart_type == "bar":
-        if y:
-            grouped = df.groupby(x)[y].mean().reset_index()
-            spec["data"].append({"type": "bar", "x": grouped[x].tolist(), "y": grouped[y].tolist(), "name": y})
+        if y and y in df.columns and pd.api.types.is_numeric_dtype(df[y]):
+            grouped = df.groupby(x)[y].mean().reset_index().sort_values(by=y, ascending=False).head(25)
+            spec["data"].append({
+                "type": "bar",
+                "x": [str(v) for v in grouped[x].tolist()],
+                "y": [float(v) for v in grouped[y].tolist()],
+                "name": y,
+                "marker": {"color": "#6366f1"}
+            })
         else:
-            counts = df[x].value_counts()
-            spec["data"].append({"type": "bar", "x": counts.index.tolist(), "y": counts.values.tolist(), "name": x})
+            counts = df[x].value_counts().head(25)
+            spec["data"].append({
+                "type": "bar",
+                "x": [str(v) for v in counts.index.tolist()],
+                "y": [int(v) for v in counts.values.tolist()],
+                "name": x,
+                "marker": {"color": "#6366f1"}
+            })
         spec["layout"]["xaxis"] = {"title": x}
-        spec["layout"]["yaxis"] = {"title": y or "Count"}
+        spec["layout"]["yaxis"] = {"title": y or "Frequency Count"}
 
     elif chart_type == "line":
-        spec["data"].append({"type": "scatter", "mode": "lines+markers",
-                             "x": df[x].tolist(), "y": df[y].tolist() if y else list(range(len(df))), "name": y or x})
+        spec["data"].append({
+            "type": "scatter",
+            "mode": "lines+markers",
+            "x": [str(v) for v in sample_df[x].tolist()],
+            "y": [float(v) for v in sample_df[y].tolist()] if y and y in sample_df.columns else list(range(len(sample_df))),
+            "name": y or x,
+            "line": {"color": "#10b981"}
+        })
         spec["layout"]["xaxis"] = {"title": x}
-        spec["layout"]["yaxis"] = {"title": y or "Index"}
+        spec["layout"]["yaxis"] = {"title": y or "Value"}
 
     elif chart_type == "scatter":
-        trace: Dict[str, Any] = {"type": "scatter", "mode": "markers",
-                                  "x": df[x].tolist(), "y": df[y].tolist() if y else list(range(len(df))), "name": y or x}
-        if color and color in df.columns:
-            trace["marker"] = {"color": df[color].tolist()}
+        trace: Dict[str, Any] = {
+            "type": "scatter",
+            "mode": "markers",
+            "x": [float(v) if pd.api.types.is_numeric_dtype(sample_df[x]) else str(v) for v in sample_df[x].tolist()],
+            "y": [float(v) for v in sample_df[y].tolist()] if y and y in sample_df.columns else list(range(len(sample_df))),
+            "name": f"{x} vs {y}",
+            "marker": {"size": 7, "color": "#6366f1", "opacity": 0.8}
+        }
         spec["data"].append(trace)
         spec["layout"]["xaxis"] = {"title": x}
         spec["layout"]["yaxis"] = {"title": y or "Index"}
 
     elif chart_type == "pie":
-        grouped = df.groupby(x)[y].sum().reset_index()
-        spec["data"].append({"type": "pie", "labels": grouped[x].tolist(), "values": grouped[y].tolist()})
+        if y and y in df.columns and pd.api.types.is_numeric_dtype(df[y]):
+            grouped = df.groupby(x)[y].sum().reset_index().sort_values(by=y, ascending=False).head(10)
+            spec["data"].append({
+                "type": "pie",
+                "labels": [str(v) for v in grouped[x].tolist()],
+                "values": [float(v) for v in grouped[y].tolist()],
+                "hole": 0.35,
+            })
+        else:
+            counts = df[x].value_counts().head(10)
+            spec["data"].append({
+                "type": "pie",
+                "labels": [str(v) for v in counts.index.tolist()],
+                "values": [int(v) for v in counts.values.tolist()],
+                "hole": 0.35,
+            })
 
     elif chart_type == "heatmap":
         numeric = df.select_dtypes(include=[np.number])
         corr = numeric.corr()
         spec["data"].append({
             "type": "heatmap",
-            "z": corr.values.tolist(),
+            "z": [[round(float(v), 3) if not pd.isna(v) else 0.0 for v in row] for row in corr.values.tolist()],
             "x": corr.columns.tolist(),
             "y": corr.index.tolist(),
             "colorscale": "Viridis",
         })
 
     elif chart_type == "boxplot":
-        spec["data"].append({"type": "box", "y": df[y].dropna().tolist() if y else df[x].dropna().tolist(), "name": y or x})
-        if color and color in df.columns:
-            # One box per category
-            spec["data"] = []
-            for cat in df[color].unique():
-                subset = df[df[color] == cat]
-                col = y if y else x
-                spec["data"].append({"type": "box", "y": subset[col].dropna().tolist(), "name": str(cat)})
+        target_col = y if y and y in df.columns else x
+        spec["data"].append({
+            "type": "box",
+            "y": [float(v) for v in df[target_col].dropna().head(1000).tolist()],
+            "name": target_col,
+            "marker": {"color": "#8b5cf6"}
+        })
 
     elif chart_type == "violin":
-        spec["data"].append({"type": "violin", "y": df[y].dropna().tolist() if y else df[x].dropna().tolist(), "name": y or x})
+        target_col = y if y and y in df.columns else x
+        spec["data"].append({
+            "type": "violin",
+            "y": [float(v) for v in df[target_col].dropna().head(1000).tolist()],
+            "name": target_col,
+            "marker": {"color": "#06b6d4"}
+        })
 
     commentary = _generate_commentary(chart_type, df, x, y)
 
@@ -137,4 +172,3 @@ def generate_chart_spec(
         "plotly_spec": spec,
         "commentary": commentary,
     }
-

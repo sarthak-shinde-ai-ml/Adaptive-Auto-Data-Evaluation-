@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Head from 'next/head';
 
 // ---- Types ----
@@ -25,7 +25,6 @@ interface RAGResponse {
   citations: string[];
 }
 
-// ---- Main Page ----
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'summary' | 'compare' | 'charts' | 'ml'>('summary');
   const [datasetId, setDatasetId] = useState<string | null>(null);
@@ -33,6 +32,11 @@ export default function Home() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+
+  // Column lists
+  const [allColumns, setAllColumns] = useState<string[]>([]);
+  const [numericCols, setNumericCols] = useState<string[]>([]);
+  const [catCols, setCatCols] = useState<string[]>([]);
 
   // RAG drawer
   const [ragOpen, setRagOpen] = useState(false);
@@ -42,22 +46,58 @@ export default function Home() {
 
   // Compare state
   const [groupBy, setGroupBy] = useState('');
-  const [metrics, setMetrics] = useState('');
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<any>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   // Chart state
   const [chartType, setChartType] = useState('bar');
   const [chartX, setChartX] = useState('');
   const [chartY, setChartY] = useState('');
   const [chartResult, setChartResult] = useState<any>(null);
+  const [chartLoading, setChartLoading] = useState(false);
 
   // ML state
-  const [mlTask, setMlTask] = useState('kmeans');
-  const [mlColumns, setMlColumns] = useState('');
+  const [mlTask, setMlTask] = useState<'kmeans' | 'regression'>('kmeans');
+  const [mlFeatures, setMlFeatures] = useState<string[]>([]);
   const [mlTarget, setMlTarget] = useState('');
   const [mlResult, setMlResult] = useState<any>(null);
+  const [mlLoading, setMlLoading] = useState(false);
+
+  // View Code modal
+  const [codeModalOpen, setCodeModalOpen] = useState(false);
+  const [codeSnippet, setCodeSnippet] = useState<{ pandas_code: string; sql_code: string } | null>(null);
+  const [codeLoading, setCodeLoading] = useState(false);
+
+  // PDF Report
+  const [pdfDownloading, setPdfDownloading] = useState(false);
 
   const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+
+  // ---- Handle Column Defaulting on Upload ----
+  useEffect(() => {
+    if (profile) {
+      const all = Object.keys(profile.missing_percentage);
+      const num = Object.keys(profile.numeric_statistics);
+      const cat = all.filter(c => !num.includes(c));
+
+      setAllColumns(all);
+      setNumericCols(num);
+      setCatCols(cat);
+
+      // Set defaults for Compare
+      setGroupBy(cat[0] || all[0] || '');
+      setSelectedMetrics(num.slice(0, 3));
+
+      // Set defaults for Charts
+      setChartX(cat[0] || all[0] || '');
+      setChartY(num[0] || all[1] || '');
+
+      // Set defaults for ML
+      setMlTarget(num[0] || '');
+      setMlFeatures(num.slice(1, 4));
+    }
+  }, [profile]);
 
   // ---- Upload ----
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -77,10 +117,80 @@ export default function Home() {
       setDatasetId(data.dataset_id);
       setFilename(data.filename);
       setProfile(data.profile);
+      setActiveTab('summary');
     } catch (err: any) {
-      setError(err.message || 'Upload failed');
+      setError(err.message || 'Upload failed. Check if server is running.');
     } finally {
       setUploading(false);
+    }
+  };
+
+  // ---- Run Compare ----
+  const handleCompare = async () => {
+    if (!datasetId || !groupBy || selectedMetrics.length === 0) return;
+    setCompareLoading(true);
+    try {
+      const res = await fetch(`${API}/datasets/${datasetId}/compare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_by: groupBy, metrics: selectedMetrics }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Comparative analysis failed');
+      setCompareResult(data.result);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  // ---- Run Chart ----
+  const handleChart = async () => {
+    if (!datasetId || !chartX) return;
+    setChartLoading(true);
+    try {
+      const res = await fetch(`${API}/datasets/${datasetId}/charts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chart_type: chartType,
+          x: chartX,
+          y: chartY || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Chart generation failed');
+      setChartResult(data);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setChartLoading(false);
+    }
+  };
+
+  // ---- Run ML ----
+  const handleML = async () => {
+    if (!datasetId || mlFeatures.length === 0) return;
+    setMlLoading(true);
+    try {
+      const res = await fetch(`${API}/datasets/${datasetId}/ml`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: mlTask,
+          columns: mlFeatures,
+          target: mlTask === 'regression' ? mlTarget : undefined,
+          k: 3,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Machine learning execution failed');
+      setMlResult(data.result);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setMlLoading(false);
     }
   };
 
@@ -103,350 +213,820 @@ export default function Home() {
     }
   };
 
-  // ---- Compare ----
-  const handleCompare = async () => {
-    if (!datasetId || !groupBy || !metrics) return;
+  // ---- View Code ----
+  const openCodeModal = async (type: 'compare' | 'chart') => {
+    if (!datasetId) return;
+    setCodeLoading(true);
+    setCodeModalOpen(true);
     try {
-      const res = await fetch(`${API}/datasets/${datasetId}/compare`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group_by: groupBy, metrics: metrics.split(',').map(s => s.trim()) }),
-      });
+      let url = `${API}/datasets/${datasetId}/code?analysis_type=${type}`;
+      if (type === 'compare') {
+        url += `&group_by=${encodeURIComponent(groupBy)}&metrics=${encodeURIComponent(selectedMetrics.join(','))}`;
+      } else {
+        url += `&chart_type=${chartType}&x=${encodeURIComponent(chartX)}&y=${encodeURIComponent(chartY)}`;
+      }
+      const res = await fetch(url);
       const data = await res.json();
-      setCompareResult(data);
+      setCodeSnippet(data);
     } catch {
-      setCompareResult(null);
+      setCodeSnippet(null);
+    } finally {
+      setCodeLoading(false);
     }
   };
 
-  // ---- Chart ----
-  const handleChart = async () => {
-    if (!datasetId || !chartX) return;
+  // ---- Download PDF Report ----
+  const handleDownloadPDF = async () => {
+    if (!datasetId) return;
+    setPdfDownloading(true);
     try {
-      const res = await fetch(`${API}/datasets/${datasetId}/charts`, {
+      const res = await fetch(`${API}/reports/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chart_type: chartType, x: chartX, y: chartY || undefined }),
+        body: JSON.stringify({ dataset_id: datasetId }),
       });
       const data = await res.json();
-      setChartResult(data);
-    } catch {
-      setChartResult(null);
+      alert(`Report compilation initiated! Report ID: ${data.report_id}`);
+    } catch (err: any) {
+      alert('Error triggering PDF report: ' + err.message);
+    } finally {
+      setPdfDownloading(false);
     }
   };
 
-  // ---- ML ----
-  const handleML = async () => {
-    if (!datasetId || !mlColumns) return;
-    try {
-      const res = await fetch(`${API}/datasets/${datasetId}/ml`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task: mlTask,
-          columns: mlColumns.split(',').map(s => s.trim()),
-          target: mlTarget || undefined,
-        }),
-      });
-      const data = await res.json();
-      setMlResult(data);
-    } catch {
-      setMlResult(null);
-    }
-  };
-
-  const columns = profile ? Object.keys(profile.missing_percentage) : [];
-
-  // ---- Render ----
   return (
     <>
       <Head>
-        <title>AADES – Adaptive Auto Data Evaluation System</title>
+        <title>AADES – Adaptive Auto Data Evaluation System v3.0</title>
       </Head>
 
-      <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
-        {/* Header */}
-        <header className="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center justify-between">
-          <h1 className="text-xl font-bold tracking-tight">
-            <span className="text-indigo-400">AADES</span> Adaptive Auto Data Evaluation System
-          </h1>
-          <button
-            onClick={() => setRagOpen(!ragOpen)}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition"
-          >
-            💬 RAG Help
-          </button>
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+        {/* Top Header */}
+        <header className="bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 py-3.5 flex items-center justify-between sticky top-0 z-20">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+              A
+            </div>
+            <div>
+              <h1 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
+                AADES <span className="text-xs px-2 py-0.5 rounded bg-indigo-950 text-indigo-400 border border-indigo-800 font-mono">v3.0</span>
+              </h1>
+              <p className="text-xs text-slate-400">Adaptive Auto Data Evaluation &amp; Analytics Platform</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {profile && (
+              <button
+                onClick={handleDownloadPDF}
+                disabled={pdfDownloading}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3.5 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5"
+              >
+                📄 {pdfDownloading ? 'Compiling PDF...' : 'Download PDF Report'}
+              </button>
+            )}
+            <button
+              onClick={() => setRagOpen(!ragOpen)}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition flex items-center gap-1.5"
+            >
+              💬 RAG Help Assistant
+            </button>
+          </div>
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          {/* Sidebar */}
-          <aside className="w-72 bg-gray-900 border-r border-gray-800 p-5 flex flex-col gap-5">
+          {/* Left Sidebar */}
+          <aside className="w-72 bg-slate-900 border-r border-slate-800 p-5 flex flex-col gap-6 overflow-y-auto">
             <div>
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Upload Dataset</h2>
-              <label className="block border-2 border-dashed border-gray-700 rounded-lg p-6 text-center cursor-pointer hover:border-indigo-500 transition">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">Dataset Ingestion</h2>
+              <label className="block border-2 border-dashed border-slate-700 rounded-xl p-5 text-center cursor-pointer hover:border-indigo-500 hover:bg-indigo-950/20 transition group">
                 <input type="file" accept=".csv,.xlsx,.xls,.json" onChange={handleUpload} className="hidden" />
-                <span className="text-gray-400 text-sm">
-                  {uploading ? 'Uploading…' : 'Drop or click – CSV, Excel, JSON'}
+                <div className="text-2xl mb-1 group-hover:scale-110 transition">📁</div>
+                <span className="text-xs text-slate-300 font-medium block">
+                  {uploading ? 'Parsing & Profiling...' : 'Upload CSV / Excel / JSON'}
                 </span>
+                <span className="text-[10px] text-slate-500 mt-1 block">Auto-generates profiling &amp; alerts</span>
               </label>
-              {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+              {error && <p className="text-red-400 text-xs mt-2 bg-red-950/50 p-2 rounded border border-red-800">{error}</p>}
             </div>
 
             {profile && (
-              <div className="space-y-2 text-sm">
-                <p className="text-gray-400">File: <span className="text-gray-200">{filename}</span></p>
-                <p className="text-gray-400">Rows: <span className="text-gray-200">{profile.row_count}</span></p>
-                <p className="text-gray-400">Columns: <span className="text-gray-200">{profile.column_count}</span></p>
-                <p className="text-gray-400">Quality Score:
-                  <span className={`ml-1 font-bold ${profile.data_quality_score >= 70 ? 'text-emerald-400' : profile.data_quality_score >= 40 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    {profile.data_quality_score}
-                  </span>
-                </p>
-                <h3 className="text-xs font-semibold text-gray-500 uppercase mt-3">Columns</h3>
-                <ul className="max-h-48 overflow-y-auto space-y-0.5">
-                  {columns.map(c => (
-                    <li key={c} className="text-gray-300 text-xs truncate">{c}</li>
-                  ))}
-                </ul>
+              <div className="space-y-4">
+                <div className="bg-slate-850 p-3.5 rounded-xl border border-slate-800 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">File:</span>
+                    <span className="text-slate-200 font-semibold truncate max-w-[140px]" title={filename}>{filename}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Rows:</span>
+                    <span className="text-slate-200 font-mono">{profile.row_count.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Columns:</span>
+                    <span className="text-slate-200 font-mono">{profile.column_count}</span>
+                  </div>
+                  <div className="flex justify-between items-center pt-1 border-t border-slate-800">
+                    <span className="text-slate-400">Quality Score:</span>
+                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${profile.data_quality_score >= 70 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'}`}>
+                      {profile.data_quality_score} / 100
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Available Columns ({allColumns.length})</h3>
+                  <div className="max-h-56 overflow-y-auto space-y-1 pr-1 text-xs">
+                    {allColumns.map(col => {
+                      const isNum = numericCols.includes(col);
+                      return (
+                        <div key={col} className="flex items-center justify-between bg-slate-800/60 px-2.5 py-1 rounded text-slate-300">
+                          <span className="truncate max-w-[150px]" title={col}>{col}</span>
+                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono ${isNum ? 'bg-indigo-950 text-indigo-400' : 'bg-slate-700 text-slate-300'}`}>
+                            {isNum ? 'num' : 'str'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
           </aside>
 
-          {/* Main content */}
-          <main className="flex-1 overflow-y-auto p-6">
+          {/* Central Workspace */}
+          <main className="flex-1 overflow-y-auto p-6 bg-slate-950">
             {!profile ? (
-              <div className="flex items-center justify-center h-full text-gray-600 text-lg">
-                Upload a dataset to get started.
+              <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-3">
+                <div className="text-4xl">📊</div>
+                <p className="text-sm">Upload a dataset from the left panel to begin analysis.</p>
               </div>
             ) : (
-              <>
+              <div className="max-w-6xl mx-auto space-y-6">
                 {/* Tabs */}
-                <div className="flex gap-1 mb-6 border-b border-gray-800">
-                  {(['summary', 'compare', 'charts', 'ml'] as const).map(tab => (
+                <div className="flex gap-2 border-b border-slate-800 pb-2">
+                  {[
+                    { id: 'summary', label: 'Overall Summary', icon: '📊' },
+                    { id: 'compare', label: 'Comparative Analysis', icon: '⚖️' },
+                    { id: 'charts', label: 'Custom Visualizer', icon: '📈' },
+                    { id: 'ml', label: 'Machine Learning', icon: '🤖' },
+                  ].map(tab => (
                     <button
-                      key={tab}
-                      onClick={() => setActiveTab(tab)}
-                      className={`px-4 py-2 text-sm font-medium capitalize transition border-b-2 ${
-                        activeTab === tab
-                          ? 'border-indigo-500 text-indigo-400'
-                          : 'border-transparent text-gray-500 hover:text-gray-300'
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`px-4 py-2 text-xs font-semibold rounded-lg transition flex items-center gap-2 ${
+                        activeTab === tab.id
+                          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
                       }`}
                     >
-                      {tab === 'summary' ? 'Overall Summary' : tab === 'compare' ? 'Comparative' : tab === 'charts' ? 'Visualizer' : 'ML'}
+                      <span>{tab.icon}</span> {tab.label}
                     </button>
                   ))}
                 </div>
 
-                {/* Tab: Summary */}
+                {/* ================= TAB 1: OVERALL SUMMARY ================= */}
                 {activeTab === 'summary' && (
                   <div className="space-y-6">
-                    <div className="grid grid-cols-3 gap-4">
-                      <Card title="Rows" value={profile.row_count} />
-                      <Card title="Columns" value={profile.column_count} />
-                      <Card title="Quality Score" value={profile.data_quality_score} color={profile.data_quality_score >= 70 ? 'emerald' : profile.data_quality_score >= 40 ? 'yellow' : 'red'} />
+                    {/* Top KPI Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <KPICard title="Total Observations" value={profile.row_count.toLocaleString()} badge="Rows" />
+                      <KPICard title="Feature Count" value={profile.column_count} badge="Columns" />
+                      <KPICard
+                        title="Data Quality Health"
+                        value={`${profile.data_quality_score}%`}
+                        badge={profile.data_quality_score >= 70 ? 'Excellent' : 'Needs Review'}
+                        color={profile.data_quality_score >= 70 ? 'emerald' : 'amber'}
+                      />
+                      <KPICard
+                        title="Anomaly Alerts"
+                        value={Object.keys(profile.outlier_flags).length}
+                        badge="Outlier Columns"
+                        color={Object.keys(profile.outlier_flags).length > 0 ? 'amber' : 'emerald'}
+                      />
                     </div>
 
-                    {/* Warnings & Alerts */}
+                    {/* Warnings & Alerts Card */}
                     {Object.keys(profile.outlier_flags).length > 0 && (
-                      <div className="bg-gray-900 border border-yellow-700 rounded-lg p-4">
-                        <h3 className="text-yellow-400 font-semibold mb-2">⚠️ Warnings &amp; Alerts</h3>
-                        <ul className="space-y-1 text-sm">
-                          {Object.entries(profile.outlier_flags).map(([col, info]) => (
-                            <li key={col} className="text-gray-300">
-                              <span className={`inline-block w-16 text-xs font-bold uppercase ${info.severity === 'high' ? 'text-red-400' : info.severity === 'medium' ? 'text-yellow-400' : 'text-blue-400'}`}>
-                                {info.severity}
+                      <div className="bg-amber-950/20 border border-amber-900/50 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center gap-2 text-amber-400 text-sm font-bold">
+                          <span>⚠️</span> Warnings &amp; Anomaly Outliers Flagged
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {Object.entries(profile.outlier_flags).map(([col, alert]) => (
+                            <div key={col} className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 flex items-center justify-between text-xs">
+                              <div>
+                                <span className="font-semibold text-slate-200 block truncate max-w-[200px]">{col}</span>
+                                <span className="text-slate-400">{alert.outlier_count} statistical outlier(s) detected via IQR</span>
+                              </div>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${alert.severity === 'high' ? 'bg-red-950 text-red-400 border border-red-800' : 'bg-amber-950 text-amber-400 border border-amber-800'}`}>
+                                {alert.severity}
                               </span>
-                              Column &quot;{col}&quot; has {info.outlier_count} outlier(s).
-                            </li>
+                            </div>
                           ))}
-                        </ul>
+                        </div>
                       </div>
                     )}
 
-                    {/* Missing Values */}
-                    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-                      <h3 className="text-gray-300 font-semibold mb-2">Missing Values (%)</h3>
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-                        {Object.entries(profile.missing_percentage).map(([col, pct]) => (
-                          <div key={col} className="flex justify-between">
-                            <span className="text-gray-400 truncate mr-2">{col}</span>
-                            <span className={pct > 20 ? 'text-red-400' : pct > 0 ? 'text-yellow-400' : 'text-emerald-400'}>{pct}%</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Numeric Stats */}
-                    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 overflow-x-auto">
-                      <h3 className="text-gray-300 font-semibold mb-2">Numeric Statistics</h3>
-                      <table className="w-full text-sm text-left">
-                        <thead>
-                          <tr className="text-gray-500 border-b border-gray-800">
-                            <th className="py-1">Column</th><th>Mean</th><th>Std</th><th>Min</th><th>Max</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {Object.entries(profile.numeric_statistics).map(([col, s]) => (
-                            <tr key={col} className="border-b border-gray-800/50 text-gray-300">
-                              <td className="py-1">{col}</td><td>{s.mean}</td><td>{s.std}</td><td>{s.min}</td><td>{s.max}</td>
+                    {/* Descriptive Statistics Table */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                      <h3 className="text-sm font-bold text-slate-200">Descriptive Numeric Statistics</h3>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead>
+                            <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                              <th className="py-2.5 px-3">Column Name</th>
+                              <th className="py-2.5 px-3">Mean</th>
+                              <th className="py-2.5 px-3">Std Dev</th>
+                              <th className="py-2.5 px-3">Min</th>
+                              <th className="py-2.5 px-3">Max</th>
+                              <th className="py-2.5 px-3">Missing %</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {Object.entries(profile.numeric_statistics).map(([col, stats]) => (
+                              <tr key={col} className="hover:bg-slate-800/40 text-slate-300">
+                                <td className="py-2 px-3 font-semibold text-white truncate max-w-[200px]" title={col}>{col}</td>
+                                <td className="py-2 px-3 font-mono">{stats.mean.toLocaleString()}</td>
+                                <td className="py-2 px-3 font-mono">{stats.std.toLocaleString()}</td>
+                                <td className="py-2 px-3 font-mono">{stats.min.toLocaleString()}</td>
+                                <td className="py-2 px-3 font-mono">{stats.max.toLocaleString()}</td>
+                                <td className="py-2 px-3 font-mono">
+                                  <span className={profile.missing_percentage[col] > 0 ? 'text-amber-400' : 'text-emerald-400'}>
+                                    {profile.missing_percentage[col]}%
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* Tab: Comparative */}
+                {/* ================= TAB 2: COMPARATIVE ANALYSIS ================= */}
                 {activeTab === 'compare' && (
-                  <div className="space-y-4">
-                    <div className="flex gap-3 items-end flex-wrap">
-                      <label className="text-sm text-gray-400">
-                        Group By
-                        <input value={groupBy} onChange={e => setGroupBy(e.target.value)} placeholder="e.g. Region" className="mt-1 block w-48 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                      </label>
-                      <label className="text-sm text-gray-400">
-                        Metrics (comma-separated)
-                        <input value={metrics} onChange={e => setMetrics(e.target.value)} placeholder="e.g. Sales,Profit" className="mt-1 block w-64 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                      </label>
-                      <button onClick={handleCompare} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded text-sm font-medium transition">Run</button>
+                  <div className="space-y-6">
+                    {/* Controls Bar */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex flex-wrap items-end justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Grouping Dimension (X / Category)</label>
+                            <select
+                              value={groupBy}
+                              onChange={e => setGroupBy(e.target.value)}
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-56"
+                            >
+                              {allColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Metrics to Compare (Numeric)</label>
+                            <div className="flex flex-wrap gap-1.5 max-w-lg">
+                              {numericCols.map(m => {
+                                const selected = selectedMetrics.includes(m);
+                                return (
+                                  <button
+                                    key={m}
+                                    onClick={() => {
+                                      if (selected) {
+                                        if (selectedMetrics.length > 1) setSelectedMetrics(selectedMetrics.filter(x => x !== m));
+                                      } else {
+                                        setSelectedMetrics([...selectedMetrics, m]);
+                                      }
+                                    }}
+                                    className={`text-[11px] px-2.5 py-1 rounded-md font-medium transition ${
+                                      selected ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
+                                    }`}
+                                  >
+                                    {selected ? '✓ ' : '+ '} {m}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleCompare}
+                            disabled={compareLoading}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                          >
+                            {compareLoading ? 'Computing...' : 'Run Comparative Analysis'}
+                          </button>
+                          {compareResult && (
+                            <button
+                              onClick={() => openCodeModal('compare')}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-2 rounded-lg text-xs font-medium transition"
+                            >
+                              &lt;/&gt; View Code
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
+
+                    {/* Results Display */}
                     {compareResult && (
-                      <pre className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
-                        {JSON.stringify(compareResult, null, 2)}
-                      </pre>
+                      <div className="space-y-6">
+                        {/* Grouped Means Table */}
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                          <h3 className="text-sm font-bold text-slate-200">Group-Wise Mean Differentials</h3>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-xs text-left">
+                              <thead>
+                                <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                                  <th className="py-2.5 px-3">{groupBy}</th>
+                                  {selectedMetrics.map(m => (
+                                    <th key={m} className="py-2.5 px-3">{m} (Mean)</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/60">
+                                {compareResult.grouped_means?.map((row: any, idx: number) => (
+                                  <tr key={idx} className="hover:bg-slate-800/40 text-slate-300">
+                                    <td className="py-2 px-3 font-semibold text-white">{row[groupBy]}</td>
+                                    {selectedMetrics.map(m => (
+                                      <td key={m} className="py-2 px-3 font-mono">
+                                        {typeof row[m] === 'number' ? row[m].toLocaleString(undefined, { maximumFractionDigits: 2 }) : row[m]}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* Correlation Matrix */}
+                        {compareResult.correlation_matrix && (
+                          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                            <h3 className="text-sm font-bold text-slate-200">Pairwise Pearson Correlation Matrix</h3>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead>
+                                  <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                                    <th className="py-2.5 px-3">Feature</th>
+                                    {selectedMetrics.map(m => (
+                                      <th key={m} className="py-2.5 px-3">{m}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/60">
+                                  {selectedMetrics.map(rowCol => (
+                                    <tr key={rowCol} className="hover:bg-slate-800/40 text-slate-300">
+                                      <td className="py-2 px-3 font-semibold text-white">{rowCol}</td>
+                                      {selectedMetrics.map(colName => {
+                                        const val = compareResult.correlation_matrix[rowCol]?.[colName];
+                                        return (
+                                          <td key={colName} className="py-2 px-3 font-mono">
+                                            <span className={`px-2 py-0.5 rounded font-bold ${
+                                              val >= 0.7 ? 'bg-emerald-950 text-emerald-400' :
+                                              val >= 0.3 ? 'bg-indigo-950 text-indigo-400' :
+                                              val <= -0.3 ? 'bg-amber-950 text-amber-400' : 'text-slate-400'
+                                            }`}>
+                                              {val !== null && val !== undefined ? val : '-'}
+                                            </span>
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
 
-                {/* Tab: Charts */}
+                {/* ================= TAB 3: CUSTOM VISUALIZER ================= */}
                 {activeTab === 'charts' && (
-                  <div className="space-y-4">
-                    <div className="flex gap-3 items-end flex-wrap">
-                      <label className="text-sm text-gray-400">
-                        Chart Type
-                        <select value={chartType} onChange={e => setChartType(e.target.value)} className="mt-1 block w-36 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
-                          {['bar','line','scatter','pie','heatmap','boxplot','violin'].map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-400">
-                        X Axis
-                        <input value={chartX} onChange={e => setChartX(e.target.value)} placeholder="column name" className="mt-1 block w-40 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                      </label>
-                      <label className="text-sm text-gray-400">
-                        Y Axis
-                        <input value={chartY} onChange={e => setChartY(e.target.value)} placeholder="column name (optional)" className="mt-1 block w-40 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                      </label>
-                      <button onClick={handleChart} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded text-sm font-medium transition">Generate</button>
+                  <div className="space-y-6">
+                    {/* Controls Bar */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex flex-wrap items-end justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Chart Type</label>
+                            <select
+                              value={chartType}
+                              onChange={e => setChartType(e.target.value)}
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-40"
+                            >
+                              <option value="bar">Bar Chart</option>
+                              <option value="line">Line Chart</option>
+                              <option value="scatter">Scatter Plot</option>
+                              <option value="pie">Pie Chart</option>
+                              <option value="heatmap">Heatmap</option>
+                              <option value="boxplot">Boxplot</option>
+                              <option value="violin">Violin Plot</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">X-Axis Column</label>
+                            <select
+                              value={chartX}
+                              onChange={e => setChartX(e.target.value)}
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-52"
+                            >
+                              {allColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Y-Axis Column (Optional)</label>
+                            <select
+                              value={chartY}
+                              onChange={e => setChartY(e.target.value)}
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-52"
+                            >
+                              <option value="">-- None / Frequency Count --</option>
+                              {numericCols.map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleChart}
+                            disabled={chartLoading}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                          >
+                            {chartLoading ? 'Rendering...' : 'Generate Visualization'}
+                          </button>
+                          {chartResult && (
+                            <button
+                              onClick={() => openCodeModal('chart')}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-2 rounded-lg text-xs font-medium transition"
+                            >
+                              &lt;/&gt; View Code
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
+
+                    {/* Chart Results & Auto-Commentary */}
                     {chartResult && (
-                      <>
-                        {chartResult.commentary && <p className="text-sm text-gray-400 italic">{chartResult.commentary}</p>}
-                        <pre className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
-                          {JSON.stringify(chartResult.plotly_spec || chartResult, null, 2)}
-                        </pre>
-                      </>
+                      <div className="space-y-4">
+                        {/* Auto-generated analytical commentary */}
+                        {chartResult.commentary && (
+                          <div className="bg-indigo-950/30 border border-indigo-900/50 rounded-xl p-4 flex items-start gap-3 text-xs text-indigo-200">
+                            <span className="text-base">💡</span>
+                            <div>
+                              <span className="font-bold uppercase tracking-wider block text-[10px] text-indigo-400 mb-0.5">Automated Descriptive Commentary</span>
+                              <p className="leading-relaxed">{chartResult.commentary}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Chart Preview Card */}
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                          <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                            <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                              {chartType.toUpperCase()} Spec &bull; {chartX} {chartY ? `vs ${chartY}` : ''}
+                            </span>
+                            <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Plotly.js Spec Ready</span>
+                          </div>
+
+                          {/* Data points preview */}
+                          {chartResult.plotly_spec?.data?.[0]?.x && (
+                            <div className="max-h-72 overflow-y-auto">
+                              <table className="w-full text-xs text-left">
+                                <thead>
+                                  <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                                    <th className="py-1.5 px-3">Item / Category</th>
+                                    <th className="py-1.5 px-3">Value</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/40">
+                                  {chartResult.plotly_spec.data[0].x.slice(0, 20).map((xVal: any, idx: number) => (
+                                    <tr key={idx} className="hover:bg-slate-800/40 text-slate-300">
+                                      <td className="py-1.5 px-3 font-semibold text-white">{String(xVal)}</td>
+                                      <td className="py-1.5 px-3 font-mono">{String(chartResult.plotly_spec.data[0].y?.[idx] ?? '-')}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
 
-                {/* Tab: ML */}
+                {/* ================= TAB 4: MACHINE LEARNING ================= */}
                 {activeTab === 'ml' && (
-                  <div className="space-y-4">
-                    <div className="flex gap-3 items-end flex-wrap">
-                      <label className="text-sm text-gray-400">
-                        Task
-                        <select value={mlTask} onChange={e => setMlTask(e.target.value)} className="mt-1 block w-36 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200">
-                          <option value="kmeans">K-Means</option>
-                          <option value="regression">Linear Regression</option>
-                        </select>
-                      </label>
-                      <label className="text-sm text-gray-400">
-                        Columns (comma-separated)
-                        <input value={mlColumns} onChange={e => setMlColumns(e.target.value)} placeholder="e.g. col1,col2" className="mt-1 block w-56 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                      </label>
-                      {mlTask === 'regression' && (
-                        <label className="text-sm text-gray-400">
-                          Target Column
-                          <input value={mlTarget} onChange={e => setMlTarget(e.target.value)} placeholder="e.g. Price" className="mt-1 block w-40 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200" />
-                        </label>
-                      )}
-                      <button onClick={handleML} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded text-sm font-medium transition">Run ML</button>
+                  <div className="space-y-6">
+                    {/* Controls Bar */}
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex flex-wrap items-end justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Algorithm Task</label>
+                            <select
+                              value={mlTask}
+                              onChange={e => setMlTask(e.target.value as any)}
+                              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-44"
+                            >
+                              <option value="kmeans">K-Means Clustering</option>
+                              <option value="regression">Linear Regression</option>
+                            </select>
+                          </div>
+
+                          {mlTask === 'regression' && (
+                            <div>
+                              <label className="text-xs font-semibold text-slate-400 block mb-1">Target Variable (Y)</label>
+                              <select
+                                value={mlTarget}
+                                onChange={e => setMlTarget(e.target.value)}
+                                className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-48"
+                              >
+                                {numericCols.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            </div>
+                          )}
+
+                          <div>
+                            <label className="text-xs font-semibold text-slate-400 block mb-1">Feature Columns (Numeric)</label>
+                            <div className="flex flex-wrap gap-1.5 max-w-lg">
+                              {numericCols.filter(c => c !== mlTarget).map(m => {
+                                const selected = mlFeatures.includes(m);
+                                return (
+                                  <button
+                                    key={m}
+                                    onClick={() => {
+                                      if (selected) {
+                                        if (mlFeatures.length > 1) setMlFeatures(mlFeatures.filter(x => x !== m));
+                                      } else {
+                                        setMlFeatures([...mlFeatures, m]);
+                                      }
+                                    }}
+                                    className={`text-[11px] px-2.5 py-1 rounded-md font-medium transition ${
+                                      selected ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700'
+                                    }`}
+                                  >
+                                    {selected ? '✓ ' : '+ '} {m}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={handleML}
+                          disabled={mlLoading}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                        >
+                          {mlLoading ? 'Training Model...' : `Run ${mlTask === 'kmeans' ? 'Clustering' : 'Regression'}`}
+                        </button>
+                      </div>
                     </div>
+
+                    {/* ML Results */}
                     {mlResult && (
-                      <pre className="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
-                        {JSON.stringify(mlResult, null, 2)}
-                      </pre>
+                      <div className="space-y-6">
+                        {/* Regression Results */}
+                        {mlTask === 'regression' && (
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                              <KPICard title="R² Test Score" value={mlResult.r2_test} badge="Test Set Evaluation" color={mlResult.r2_test >= 0.7 ? 'emerald' : 'amber'} />
+                              <KPICard title="R² Train Score" value={mlResult.r2_train} badge="Train Set Performance" />
+                              <KPICard title="Mean Squared Error" value={mlResult.mse_test?.toLocaleString()} badge="Test MSE" />
+                              <KPICard title="Train / Test Split" value={`${mlResult.n_train} / ${mlResult.n_test}`} badge="Samples" />
+                            </div>
+
+                            {/* Coefficients Table */}
+                            {mlResult.coefficients && (
+                              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                                <h3 className="text-sm font-bold text-slate-200">Learned Feature Weights (Coefficients)</h3>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-xs text-left">
+                                    <thead>
+                                      <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                                        <th className="py-2.5 px-3">Predictor Feature</th>
+                                        <th className="py-2.5 px-3">Standardized Weight</th>
+                                        <th className="py-2.5 px-3">Direction</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-800/60">
+                                      {Object.entries(mlResult.coefficients).map(([feat, coef]: [string, any]) => (
+                                        <tr key={feat} className="hover:bg-slate-800/40 text-slate-300">
+                                          <td className="py-2 px-3 font-semibold text-white">{feat}</td>
+                                          <td className="py-2 px-3 font-mono">{coef}</td>
+                                          <td className="py-2 px-3">
+                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${coef >= 0 ? 'bg-emerald-950 text-emerald-400' : 'bg-red-950 text-red-400'}`}>
+                                              {coef >= 0 ? 'Positive Impact (↑)' : 'Negative Impact (↓)'}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* K-Means Results */}
+                        {mlTask === 'kmeans' && (
+                          <div className="space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <KPICard title="Number of Clusters" value={mlResult.k} badge="K Setting" />
+                              <KPICard title="Clustered Records" value={mlResult.n_samples?.toLocaleString()} badge="Dataset Size" />
+                              <KPICard title="Features Modeled" value={mlResult.columns_used?.length} badge="Dimensions" />
+                            </div>
+
+                            {/* Centroids Table */}
+                            {mlResult.centroids && (
+                              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                                <h3 className="text-sm font-bold text-slate-200">Cluster Centers (Centroids)</h3>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-xs text-left">
+                                    <thead>
+                                      <tr className="text-slate-400 border-b border-slate-800 bg-slate-950/50">
+                                        <th className="py-2.5 px-3">Cluster ID</th>
+                                        {mlResult.columns_used?.map((col: string) => (
+                                          <th key={col} className="py-2.5 px-3">{col}</th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-800/60">
+                                      {mlResult.centroids.map((center: number[], idx: number) => (
+                                        <tr key={idx} className="hover:bg-slate-800/40 text-slate-300">
+                                          <td className="py-2 px-3 font-semibold text-indigo-400">Cluster #{idx + 1}</td>
+                                          {center.map((val, cIdx) => (
+                                            <td key={cIdx} className="py-2 px-3 font-mono">{roundNum(val)}</td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
-              </>
+              </div>
             )}
           </main>
 
-          {/* RAG Help Drawer */}
+          {/* RAG Help Slide-Over Drawer */}
           {ragOpen && (
-            <aside className="w-96 bg-gray-900 border-l border-gray-800 flex flex-col">
-              <div className="p-4 border-b border-gray-800 flex items-center justify-between">
-                <h2 className="font-semibold text-indigo-400">💬 RAG Help</h2>
-                <button onClick={() => setRagOpen(false)} className="text-gray-500 hover:text-gray-300 text-lg">✕</button>
+            <aside className="w-96 bg-slate-900 border-l border-slate-800 flex flex-col z-30 shadow-2xl">
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">💬</span>
+                  <h2 className="font-bold text-sm text-white">RAG Insight Assistant</h2>
+                </div>
+                <button onClick={() => setRagOpen(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
               </div>
+
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {ragResponse && (
+                {ragResponse ? (
                   <div className="space-y-3">
-                    <Block title="Explanation" color="indigo">{ragResponse.explanation}</Block>
-                    <Block title="Root Cause" color="yellow">{ragResponse.root_cause}</Block>
-                    <Block title="Counter-Plan" color="emerald">{ragResponse.counter_plan}</Block>
-                    <div className="flex items-center gap-2 text-xs text-gray-500">
-                      <span className={`px-2 py-0.5 rounded-full font-semibold ${ragResponse.confidence === 'high' ? 'bg-emerald-900 text-emerald-300' : ragResponse.confidence === 'medium' ? 'bg-yellow-900 text-yellow-300' : 'bg-red-900 text-red-300'}`}>
-                        {ragResponse.confidence} confidence
+                    <RAGBlock title="Plain-Language Explanation" color="indigo">{ragResponse.explanation}</RAGBlock>
+                    <RAGBlock title="Root-Cause Analysis" color="amber">{ragResponse.root_cause}</RAGBlock>
+                    <RAGBlock title="Strategic Counter-Plan" color="emerald">{ragResponse.counter_plan}</RAGBlock>
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 pt-2 border-t border-slate-800">
+                      <span className="px-2 py-0.5 rounded font-bold uppercase bg-emerald-950 text-emerald-400 border border-emerald-800">
+                        {ragResponse.confidence} Confidence
                       </span>
-                      <span>Citations: {ragResponse.citations.join(', ')}</span>
+                      <span>Evidence: {ragResponse.citations.join(', ')}</span>
                     </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500 text-center py-10">
+                    Ask a question about anomalies, performance gaps, or metric root-causes in your dataset.
                   </div>
                 )}
               </div>
-              <div className="p-4 border-t border-gray-800">
+
+              <div className="p-4 border-t border-slate-800">
                 <div className="flex gap-2">
                   <input
                     value={ragQuestion}
                     onChange={e => setRagQuestion(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleRag()}
-                    placeholder="Ask about your data…"
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200"
+                    placeholder="e.g. Why are certain metrics skewed?"
+                    className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                   />
-                  <button onClick={handleRag} disabled={ragLoading} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded text-sm font-medium transition disabled:opacity-50">
-                    {ragLoading ? '…' : 'Ask'}
+                  <button
+                    onClick={handleRag}
+                    disabled={ragLoading}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-2 rounded-lg text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                  >
+                    {ragLoading ? '...' : 'Ask'}
                   </button>
                 </div>
               </div>
             </aside>
           )}
         </div>
+
+        {/* View Code Modal */}
+        {codeModalOpen && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>&lt;/&gt;</span> Export Analysis Code (Pandas &amp; SQL)
+                </h3>
+                <button onClick={() => setCodeModalOpen(false)} className="text-slate-400 hover:text-white">✕</button>
+              </div>
+
+              <div className="p-5 overflow-y-auto space-y-4">
+                {codeLoading ? (
+                  <p className="text-xs text-slate-400">Generating reproducible code snippets...</p>
+                ) : codeSnippet ? (
+                  <>
+                    <div>
+                      <div className="flex justify-between items-center mb-1.5">
+                        <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Python (Pandas)</span>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(codeSnippet.pandas_code)}
+                          className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded border border-slate-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre">
+                        {codeSnippet.pandas_code}
+                      </pre>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between items-center mb-1.5">
+                        <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">SQL (Standard ANSI)</span>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(codeSnippet.sql_code)}
+                          className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-0.5 rounded border border-slate-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-amber-400 overflow-x-auto whitespace-pre">
+                        {codeSnippet.sql_code}
+                      </pre>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-red-400">Could not retrieve code snippet.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
 }
 
-// ---- Small Components ----
+// ---- Helper Components ----
 
-function Card({ title, value, color = 'indigo' }: { title: string; value: number | string; color?: string }) {
-  const textColor = color === 'emerald' ? 'text-emerald-400' : color === 'yellow' ? 'text-yellow-400' : color === 'red' ? 'text-red-400' : 'text-indigo-400';
+function KPICard({ title, value, badge, color = 'indigo' }: { title: string; value: string | number; badge?: string; color?: string }) {
+  const textColor = color === 'emerald' ? 'text-emerald-400' : color === 'amber' ? 'text-amber-400' : 'text-indigo-400';
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-      <p className="text-xs text-gray-500 uppercase tracking-wider">{title}</p>
-      <p className={`text-2xl font-bold mt-1 ${textColor}`}>{value}</p>
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+      <div className="flex justify-between items-start">
+        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{title}</span>
+        {badge && <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">{badge}</span>}
+      </div>
+      <div className={`text-2xl font-bold mt-2 font-mono ${textColor}`}>{value}</div>
     </div>
   );
 }
 
-function Block({ title, color, children }: { title: string; color: string; children: React.ReactNode }) {
-  const border = color === 'indigo' ? 'border-indigo-700' : color === 'yellow' ? 'border-yellow-700' : 'border-emerald-700';
+function RAGBlock({ title, color, children }: { title: string; color: string; children: React.ReactNode }) {
+  const border = color === 'indigo' ? 'border-indigo-600' : color === 'amber' ? 'border-amber-600' : 'border-emerald-600';
+  const tagBg = color === 'indigo' ? 'bg-indigo-950 text-indigo-400' : color === 'amber' ? 'bg-amber-950 text-amber-400' : 'bg-emerald-950 text-emerald-400';
   return (
-    <div className={`border-l-4 ${border} bg-gray-800/50 rounded-r-lg p-3`}>
-      <h4 className="text-xs font-semibold text-gray-400 uppercase mb-1">{title}</h4>
-      <p className="text-sm text-gray-300">{children}</p>
+    <div className={`border-l-4 ${border} bg-slate-800/40 rounded-r-xl p-3.5 space-y-1`}>
+      <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${tagBg}`}>
+        {title}
+      </span>
+      <p className="text-xs text-slate-300 leading-relaxed pt-1">{children}</p>
     </div>
   );
 }
 
+function roundNum(val: any): string {
+  if (typeof val === 'number') {
+    return val.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  return String(val);
+}

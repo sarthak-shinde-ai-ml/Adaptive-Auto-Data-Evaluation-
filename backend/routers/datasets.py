@@ -7,9 +7,10 @@ from typing import Dict, Any, List, Optional
 
 router = APIRouter()
 
-# Module-level dict to track uploaded file paths by dataset_id.
+# Module-level dict to track uploaded file paths and profiles by dataset_id.
 # In production, replace with a database or object store.
 _file_store: Dict[str, str] = {}
+_profile_store: Dict[str, Any] = {}
 
 UPLOAD_DIR = os.path.join(tempfile.gettempdir(), "aades_uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -21,6 +22,17 @@ def _get_file_path(dataset_id: str) -> str:
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found. Upload a file first.")
     return path
+
+
+def get_dataset_context(dataset_id: str) -> Dict[str, Any]:
+    """Retrieve both file path and profile for a dataset."""
+    path = _get_file_path(dataset_id)
+    profile = _profile_store.get(dataset_id)
+    if not profile:
+        from ..services.profiling import profile_dataset
+        profile = profile_dataset(path)
+        _profile_store[dataset_id] = profile
+    return {"file_path": path, "profile": profile}
 
 
 # ---------- Upload + Auto-Profile ----------
@@ -44,6 +56,7 @@ def upload_dataset(file: UploadFile = File(...)):
     from ..services.profiling import profile_dataset
     try:
         profile = profile_dataset(save_path)
+        _profile_store[dataset_id] = profile
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Profiling failed: {exc}")
 
@@ -154,7 +167,65 @@ async def run_ml(dataset_id: str, req: MLRequest):
 # ---------- Code Export ----------
 
 @router.get("/{dataset_id}/code", summary="Retrieve generated Pandas/SQL code for an analysis")
-async def get_code(dataset_id: str):
-    _get_file_path(dataset_id)  # validate existence
-    # Placeholder: in production, generate Pandas/SQL code from the last analysis
-    return {"dataset_id": dataset_id, "code": "# Code generation coming soon – placeholder."}
+async def get_code(
+    dataset_id: str,
+    analysis_type: str = "compare",
+    group_by: Optional[str] = None,
+    metrics: Optional[str] = None,
+    chart_type: Optional[str] = None,
+    x: Optional[str] = None,
+    y: Optional[str] = None,
+):
+    _get_file_path(dataset_id)
+    metric_list = [m.strip() for m in metrics.split(",")] if metrics else []
+
+    if analysis_type == "compare" and group_by and metric_list:
+        pandas_code = f"""import pandas as pd
+
+# 1. Load dataset
+df = pd.read_csv("{dataset_id}.csv")
+
+# 2. Group by and aggregate means
+grouped = df.groupby("{group_by}")[{metric_list}].mean().reset_index()
+print(grouped)
+
+# 3. Compute pairwise Pearson correlation
+corr = df[{metric_list}].corr(method="pearson")
+print(corr)
+"""
+        sql_metrics = ", ".join([f'AVG("{m}") AS "avg_{m}"' for m in metric_list])
+        sql_code = f"""SELECT
+    "{group_by}",
+    {sql_metrics}
+FROM dataset_{dataset_id}
+GROUP BY "{group_by}";
+"""
+    elif analysis_type == "chart" and chart_type and x:
+        pandas_code = f"""import pandas as pd
+import plotly.express as px
+
+# 1. Load dataset
+df = pd.read_csv("{dataset_id}.csv")
+
+# 2. Render {chart_type} chart
+fig = px.{chart_type}(df, x="{x}"{f', y="{y}"' if y else ''}, title="{chart_type.title()} Analysis")
+fig.show()
+"""
+        sql_code = f"""SELECT
+    "{x}"{f', "{y}"' if y else ''}
+FROM dataset_{dataset_id}
+LIMIT 1000;
+"""
+    else:
+        pandas_code = f"""import pandas as pd
+
+df = pd.read_csv("{dataset_id}.csv")
+print(df.describe())
+"""
+        sql_code = f"""SELECT * FROM dataset_{dataset_id} LIMIT 100;"""
+
+    return {
+        "dataset_id": dataset_id,
+        "pandas_code": pandas_code.strip(),
+        "sql_code": sql_code.strip(),
+    }

@@ -5,14 +5,20 @@ Provides a lightweight function that reads a CSV/Excel/JSON file with pandas and
 - basic descriptive statistics (mean, std, min, max) for numeric columns
 - outlier detection (IQR method) and skewness
 """
+import os
 import pandas as pd
 import numpy as np
 from typing import Dict, Any
 
+# In-memory DataFrame cache to keep analysis instant even for 15MB+ Excel files
+_DF_CACHE: Dict[str, pd.DataFrame] = {}
+
+
 def _load_file(file_path: str) -> pd.DataFrame:
-    """Load a CSV, Excel or JSON file into a DataFrame.
-    The function infers the file type from the extension.
-    """
+    """Load a CSV, Excel or JSON file into a DataFrame, strip column whitespace, and cache."""
+    if file_path in _DF_CACHE:
+        return _DF_CACHE[file_path]
+
     if file_path.lower().endswith('.csv'):
         df = pd.read_csv(file_path)
     elif file_path.lower().endswith(('.xls', '.xlsx')):
@@ -20,8 +26,15 @@ def _load_file(file_path: str) -> pd.DataFrame:
     elif file_path.lower().endswith('.json'):
         df = pd.read_json(file_path)
     else:
-        raise ValueError('Unsupported file type')
+        raise ValueError('Unsupported file type. Use CSV, Excel (.xlsx/.xls) or JSON.')
+
+    # Clean and strip column names to eliminate hidden whitespace
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Cache if not overly huge
+    _DF_CACHE[file_path] = df
     return df
+
 
 def _missing_stats(df: pd.DataFrame) -> Dict[str, float]:
     """Return missing-value percentage per column."""
@@ -32,6 +45,7 @@ def _missing_stats(df: pd.DataFrame) -> Dict[str, float]:
         str(col): round(float(df[col].isna().sum() / total * 100), 2)
         for col in df.columns
     }
+
 
 def _numeric_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     """Basic stats for numeric columns."""
@@ -49,10 +63,9 @@ def _numeric_stats(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         }
     return stats
 
+
 def _outlier_flags(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """Detect outliers using the IQR method for numeric columns.
-    Returns a dict mapping column -> {"outlier_count": int, "severity": str}
-    """
+    """Detect outliers using the IQR method for numeric columns."""
     flags = {}
     numeric = df.select_dtypes(include=[np.number])
     for col in numeric.columns:
@@ -75,6 +88,7 @@ def _outlier_flags(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         }
     return flags
 
+
 def profile_dataset(file_path: str) -> Dict[str, Any]:
     """Execute the full profiling pipeline.
     Returns a dictionary ready to be JSON-serialised.
@@ -84,6 +98,7 @@ def profile_dataset(file_path: str) -> Dict[str, Any]:
     missing = _missing_stats(df)
     numeric_stats = _numeric_stats(df)
     outliers = _outlier_flags(df)
+
     # Simple data-quality score: 100 - (missing % avg + outlier severity weight)
     missing_avg = float(np.mean(list(missing.values()))) if missing else 0.0
     outlier_sev_weight = 0.0
@@ -91,6 +106,7 @@ def profile_dataset(file_path: str) -> Dict[str, Any]:
     for v in outliers.values():
         outlier_sev_weight += sev_map.get(v["severity"], 0)
     quality_score = max(0.0, 100.0 - missing_avg - outlier_sev_weight)
+
     return {
         "row_count": rows,
         "column_count": cols,
