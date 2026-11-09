@@ -25,6 +25,7 @@ def _get_file_path(dataset_id: str) -> str:
 
 # ---------- Upload + Auto-Profile ----------
 
+@router.post("", summary="Upload dataset and trigger profiling")
 @router.post("/", summary="Upload dataset and trigger profiling")
 def upload_dataset(file: UploadFile = File(...)):
     if not file.filename:

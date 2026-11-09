@@ -57,7 +57,7 @@ export default function Home() {
   const [mlTarget, setMlTarget] = useState('');
   const [mlResult, setMlResult] = useState<any>(null);
 
-  const API = '/api';
+  const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
   // ---- Upload ----
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

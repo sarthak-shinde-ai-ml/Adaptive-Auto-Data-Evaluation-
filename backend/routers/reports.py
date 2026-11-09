@@ -12,6 +12,7 @@ class ReportRequest(BaseModel):
     include_rag_insights: bool = True
 
 
+@router.post("", summary="Generate PDF report for a dataset")
 @router.post("/", summary="Generate PDF report for a dataset")
 async def generate_report(req: ReportRequest):
     # Placeholder: generate PDF using ReportLab and return file URL.
