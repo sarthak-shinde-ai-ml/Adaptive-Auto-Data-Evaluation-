@@ -117,12 +117,18 @@ def run_tests():
     print(f"   -> RAG confidence: {rag_data['confidence']}")
     print(f"   -> Counter-plan: {rag_data['counter_plan']}\n")
 
-    # 9. Test PDF Report Request
-    print("8. Testing PDF Report generation (POST /api/reports/)...")
+    # 9. Test PDF Report Request & Download
+    print("8. Testing PDF Report generation & download (POST /api/reports/ & GET /api/reports/{id}/download)...")
     rep_payload = {"dataset_id": dataset_id}
     res_rep = client.post("/api/reports/", json=rep_payload)
     assert res_rep.status_code == 200
-    print(f"   -> Report queued: {res_rep.json()['report_id']}\n")
+    assert "download_url" in res_rep.json()
+    print(f"   -> Report compiled: {res_rep.json()['report_id']}")
+
+    res_down = client.get(f"/api/reports/{dataset_id}/download")
+    assert res_down.status_code == 200
+    assert res_down.headers["content-type"] == "application/pdf"
+    print(f"   -> PDF binary downloaded successfully ({len(res_down.content)} bytes)!\n")
 
     print("========================================")
     print("ALL 8 ENDPOINT TESTS PASSED COMPLETELY!")
