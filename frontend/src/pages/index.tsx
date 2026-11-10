@@ -81,6 +81,8 @@ export default function Home() {
   const [mlTarget, setMlTarget] = useState('');
   const [mlResult, setMlResult] = useState<any>(null);
   const [mlLoading, setMlLoading] = useState(false);
+  const mlRegChartRef = useRef<HTMLDivElement>(null);
+  const mlKmeansChartRef = useRef<HTMLDivElement>(null);
 
   // PDF Report
   const [pdfDownloading, setPdfDownloading] = useState(false);
@@ -131,75 +133,176 @@ export default function Home() {
     }
   }, [filterCol, datasetId]);
 
+  // Helper to reliably render Plotly charts and handle resize
+  const renderWithPlotly = (container: HTMLDivElement | null, data: any[], layout: any, config?: any) => {
+    if (!container || typeof window === 'undefined') return;
+
+    const tryRender = (retries = 12) => {
+      if (window.Plotly && container) {
+        container.innerHTML = '';
+        window.Plotly.newPlot(container, data, layout, {
+          responsive: true,
+          displayModeBar: true,
+          displaylogo: false,
+          ...config,
+        }).then(() => {
+          setTimeout(() => {
+            if (window.Plotly && container) {
+              window.Plotly.Plots.resize(container);
+            }
+          }, 80);
+        });
+      } else if (retries > 0) {
+        setTimeout(() => tryRender(retries - 1), 200);
+      }
+    };
+
+    tryRender();
+  };
+
+  // Global window resize listener to keep charts responsive
+  useEffect(() => {
+    const handleResize = () => {
+      if (typeof window !== 'undefined' && window.Plotly) {
+        if (chartContainerRef.current) window.Plotly.Plots.resize(chartContainerRef.current);
+        if (compareChartRef.current) window.Plotly.Plots.resize(compareChartRef.current);
+        if (mlRegChartRef.current) window.Plotly.Plots.resize(mlRegChartRef.current);
+        if (mlKmeansChartRef.current) window.Plotly.Plots.resize(mlKmeansChartRef.current);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   // ---- Render Plotly Visualizer Chart ----
   useEffect(() => {
-    if (chartResult && chartResult.plotly_spec && typeof window !== 'undefined') {
-      const renderPlot = () => {
-        if (window.Plotly && chartContainerRef.current) {
-          const spec = chartResult.plotly_spec;
-          const layout = {
-            ...spec.layout,
-            paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent',
-            font: { color: '#94a3b8', family: 'system-ui, sans-serif' },
-            xaxis: { ...spec.layout?.xaxis, gridcolor: '#1e293b', zerolinecolor: '#334155' },
-            yaxis: { ...spec.layout?.yaxis, gridcolor: '#1e293b', zerolinecolor: '#334155' },
-            margin: { t: 40, r: 25, l: 60, b: 60 },
-            autosize: true,
-          };
-          window.Plotly.newPlot(chartContainerRef.current, spec.data, layout, {
-            responsive: true,
-            displayModeBar: true,
-            displaylogo: false,
-          });
-        }
+    if (chartResult && chartResult.plotly_spec && activeTab === 'charts') {
+      const spec = chartResult.plotly_spec;
+      const isPie = spec.data?.[0]?.type === 'pie';
+
+      const layout: any = {
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { color: '#cbd5e1', family: 'system-ui, -apple-system, sans-serif', size: 12 },
+        margin: isPie ? { t: 30, r: 40, l: 40, b: 60 } : { t: 40, r: 30, l: 65, b: 65 },
+        autosize: true,
       };
 
-      if (window.Plotly) renderPlot();
-      else setTimeout(renderPlot, 500);
+      if (isPie) {
+        layout.legend = {
+          orientation: 'h',
+          x: 0.5,
+          xanchor: 'center',
+          y: -0.15,
+          font: { color: '#cbd5e1', size: 11 },
+        };
+      } else {
+        layout.xaxis = {
+          ...spec.layout?.xaxis,
+          gridcolor: '#1e293b',
+          zerolinecolor: '#334155',
+          tickfont: { color: '#94a3b8' },
+        };
+        layout.yaxis = {
+          ...spec.layout?.yaxis,
+          gridcolor: '#1e293b',
+          zerolinecolor: '#334155',
+          tickfont: { color: '#94a3b8' },
+        };
+      }
+
+      renderWithPlotly(chartContainerRef.current, spec.data, layout);
     }
   }, [chartResult, activeTab]);
 
   // ---- Render Plotly Comparative Chart ----
   useEffect(() => {
-    if (compareResult && compareResult.grouped_means && compareResult.grouped_means.length > 0 && typeof window !== 'undefined') {
-      const renderComparePlot = () => {
-        if (window.Plotly && compareChartRef.current) {
-          const xCategories = compareResult.grouped_means.map((r: any) => String(r[groupBy]));
-          const traces = selectedMetrics.map((m, idx) => {
-            const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4'];
-            return {
-              type: 'bar',
-              name: m,
-              x: xCategories,
-              y: compareResult.grouped_means.map((r: any) => r[m] ?? 0),
-              marker: { color: colors[idx % colors.length] },
-            };
-          });
+    if (compareResult && compareResult.grouped_means && compareResult.grouped_means.length > 0 && activeTab === 'compare') {
+      const xCategories = compareResult.grouped_means.map((r: any) => String(r[groupBy]));
+      const traces = selectedMetrics.map((m, idx) => {
+        const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6'];
+        return {
+          type: 'bar',
+          name: m,
+          x: xCategories,
+          y: compareResult.grouped_means.map((r: any) => r[m] ?? 0),
+          marker: { color: colors[idx % colors.length] },
+        };
+      });
 
-          const layout = {
-            barmode: 'group',
-            title: `Comparison by ${groupBy}`,
-            paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent',
-            font: { color: '#94a3b8', family: 'system-ui, sans-serif' },
-            xaxis: { gridcolor: '#1e293b' },
-            yaxis: { gridcolor: '#1e293b', title: 'Average Value' },
-            margin: { t: 40, r: 25, l: 60, b: 60 },
-            autosize: true,
-          };
-          window.Plotly.newPlot(compareChartRef.current, traces, layout, {
-            responsive: true,
-            displayModeBar: true,
-            displaylogo: false,
-          });
-        }
+      const layout = {
+        barmode: 'group',
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { color: '#cbd5e1', family: 'system-ui, sans-serif', size: 12 },
+        xaxis: { gridcolor: '#1e293b', tickfont: { color: '#94a3b8' } },
+        yaxis: { gridcolor: '#1e293b', title: 'Average Value', tickfont: { color: '#94a3b8' } },
+        margin: { t: 40, r: 25, l: 65, b: 65 },
+        autosize: true,
+        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.2, font: { color: '#cbd5e1' } },
       };
 
-      if (window.Plotly) renderComparePlot();
-      else setTimeout(renderComparePlot, 500);
+      renderWithPlotly(compareChartRef.current, traces, layout);
     }
   }, [compareResult, activeTab, selectedMetrics, groupBy]);
+
+  // ---- Render Plotly ML Charts ----
+  useEffect(() => {
+    if (mlResult && activeTab === 'ml') {
+      if (mlTask === 'regression' && mlResult.coefficients) {
+        const entries = Object.entries(mlResult.coefficients);
+        const feats = entries.map(([f]) => f);
+        const weights = entries.map(([, w]: [string, any]) => Number(w));
+        const colors = weights.map(w => (w >= 0 ? '#10b981' : '#ef4444'));
+
+        const trace = {
+          type: 'bar',
+          x: weights,
+          y: feats,
+          orientation: 'h',
+          marker: { color: colors },
+        };
+
+        const layout = {
+          paper_bgcolor: 'transparent',
+          plot_bgcolor: 'transparent',
+          font: { color: '#cbd5e1', family: 'system-ui, sans-serif', size: 12 },
+          xaxis: { gridcolor: '#1e293b', zerolinecolor: '#475569', title: 'Standardized Impact Weight / Direction' },
+          yaxis: { gridcolor: '#1e293b', automargin: true, tickfont: { color: '#94a3b8' } },
+          margin: { t: 30, r: 30, l: 160, b: 50 },
+          autosize: true,
+        };
+
+        renderWithPlotly(mlRegChartRef.current, [trace], layout);
+      } else if (mlTask === 'kmeans' && mlResult.centroids && mlResult.columns_used) {
+        const clusterLabels = mlResult.centroids.map((_: any, idx: number) => `Cluster #${idx + 1}`);
+        const traces = mlResult.columns_used.map((colName: string, cIdx: number) => {
+          const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6'];
+          return {
+            type: 'bar',
+            name: colName,
+            x: clusterLabels,
+            y: mlResult.centroids.map((center: number[]) => center[cIdx]),
+            marker: { color: colors[cIdx % colors.length] },
+          };
+        });
+
+        const layout = {
+          barmode: 'group',
+          paper_bgcolor: 'transparent',
+          plot_bgcolor: 'transparent',
+          font: { color: '#cbd5e1', family: 'system-ui, sans-serif', size: 12 },
+          xaxis: { gridcolor: '#1e293b', tickfont: { color: '#94a3b8' } },
+          yaxis: { gridcolor: '#1e293b', title: 'Centroid Feature Value', tickfont: { color: '#94a3b8' } },
+          margin: { t: 30, r: 25, l: 65, b: 65 },
+          autosize: true,
+          legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.2, font: { color: '#cbd5e1' } },
+        };
+
+        renderWithPlotly(mlKmeansChartRef.current, traces, layout);
+      }
+    }
+  }, [mlResult, activeTab, mlTask, mlTarget]);
 
   // ---- Upload ----
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -794,13 +897,25 @@ export default function Home() {
                       <div className="space-y-6">
                         {/* Interactive Visual Comparison Bar Chart */}
                         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
-                          <h3 className="text-sm font-bold text-slate-200">Visual Comparison Chart</h3>
-                          <div
-                            ref={compareChartRef}
-                            id="plotly-compare-container"
-                            className="w-full h-80 rounded-lg overflow-hidden flex items-center justify-center"
-                          >
-                            <p className="text-xs text-slate-500">Rendering comparative chart...</p>
+                          <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                            <h3 className="text-sm font-bold text-slate-200">Visual Comparison Chart</h3>
+                            <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Interactive Visual Plot</span>
+                          </div>
+                          <div className="relative w-full h-[420px] bg-slate-950/40 rounded-xl border border-slate-800/80 p-1">
+                            {compareLoading && (
+                              <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm rounded-xl">
+                                <div className="flex items-center gap-2 text-xs text-indigo-400 font-medium">
+                                  <span className="inline-block animate-spin">⏳</span>
+                                  <span>Computing comparative chart...</span>
+                                </div>
+                              </div>
+                            )}
+                            <div
+                              ref={compareChartRef}
+                              id="plotly-compare-container"
+                              className="w-full h-full"
+                              style={{ minHeight: '400px' }}
+                            />
                           </div>
                         </div>
 
@@ -958,13 +1073,21 @@ export default function Home() {
                             <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Interactive Visual Plot</span>
                           </div>
 
-                          {/* The real rendered Plotly chart element */}
-                          <div
-                            ref={chartContainerRef}
-                            id="plotly-chart-container"
-                            className="w-full h-96 rounded-lg overflow-hidden flex items-center justify-center"
-                          >
-                            <p className="text-xs text-slate-500">Loading interactive chart rendering...</p>
+                          <div className="relative w-full h-[480px] bg-slate-950/40 rounded-xl border border-slate-800/80 p-1">
+                            {chartLoading && (
+                              <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm rounded-xl">
+                                <div className="flex items-center gap-2 text-xs text-indigo-400 font-medium">
+                                  <span className="inline-block animate-spin">⏳</span>
+                                  <span>Rendering visualization...</span>
+                                </div>
+                              </div>
+                            )}
+                            <div
+                              ref={chartContainerRef}
+                              id="plotly-chart-container"
+                              className="w-full h-full"
+                              style={{ minHeight: '460px' }}
+                            />
                           </div>
                         </div>
                       </div>
@@ -1067,6 +1190,24 @@ export default function Home() {
                               <KPICard title="Train / Test Split" value={`${mlResult.n_train} / ${mlResult.n_test}`} badge="Samples" />
                             </div>
 
+                            {/* Visual Weights Bar Chart */}
+                            {mlResult.coefficients && (
+                              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                  <h3 className="text-sm font-bold text-slate-200">Feature Importance Visualizer</h3>
+                                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Interactive Visual Plot</span>
+                                </div>
+                                <div className="relative w-full h-[360px] bg-slate-950/40 rounded-xl border border-slate-800/80 p-1">
+                                  <div
+                                    ref={mlRegChartRef}
+                                    id="plotly-ml-reg-container"
+                                    className="w-full h-full"
+                                    style={{ minHeight: '340px' }}
+                                  />
+                                </div>
+                              </div>
+                            )}
+
                             {/* Coefficients Table */}
                             {mlResult.coefficients && (
                               <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
@@ -1108,6 +1249,24 @@ export default function Home() {
                               <KPICard title="Clustered Records" value={mlResult.n_samples?.toLocaleString()} badge="Dataset Size" />
                               <KPICard title="Features Modeled" value={mlResult.columns_used?.length} badge="Dimensions" />
                             </div>
+
+                            {/* Visual Centroids Grouped Bar Chart */}
+                            {mlResult.centroids && (
+                              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                                  <h3 className="text-sm font-bold text-slate-200">Cluster Profiles (Feature Centroids)</h3>
+                                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400">Interactive Visual Plot</span>
+                                </div>
+                                <div className="relative w-full h-[360px] bg-slate-950/40 rounded-xl border border-slate-800/80 p-1">
+                                  <div
+                                    ref={mlKmeansChartRef}
+                                    id="plotly-ml-kmeans-container"
+                                    className="w-full h-full"
+                                    style={{ minHeight: '340px' }}
+                                  />
+                                </div>
+                              </div>
+                            )}
 
                             {/* Centroids Table */}
                             {mlResult.centroids && (

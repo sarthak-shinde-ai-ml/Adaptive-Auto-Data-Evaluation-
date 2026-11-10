@@ -125,7 +125,9 @@ def generate_chart_spec(
                 "type": "pie",
                 "labels": [str(v) for v in grouped[x].tolist()],
                 "values": [float(v) for v in grouped[y].tolist()],
-                "hole": 0.35,
+                "hole": 0.4,
+                "textinfo": "percent",
+                "hoverinfo": "label+percent+value",
             })
         else:
             counts = df[x].value_counts().head(10)
@@ -133,7 +135,9 @@ def generate_chart_spec(
                 "type": "pie",
                 "labels": [str(v) for v in counts.index.tolist()],
                 "values": [int(v) for v in counts.values.tolist()],
-                "hole": 0.35,
+                "hole": 0.4,
+                "textinfo": "percent",
+                "hoverinfo": "label+percent+value",
             })
 
     elif chart_type == "heatmap":
